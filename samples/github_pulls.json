@@ -1,0 +1,116 @@
+{
+ "repo": "example-org/member-service",
+ "pulls": [
+  {
+   "number": 12,
+   "title": "会員照会 API を追加",
+   "user": {
+    "login": "dev-1",
+    "type": "User"
+   },
+   "comments": [
+    {
+     "id": 1001,
+     "user": {
+      "login": "reviewer-x",
+      "type": "User"
+     },
+     "path": "src/main/java/com/example/app/member/MemberService.java",
+     "body": "[MUST] 会員が存在しないときに null を返していて、設計書の APPE0001 の例外になっていない",
+     "created_at": "2026-09-20T10:00:00Z"
+    },
+    {
+     "id": 1002,
+     "user": {
+      "login": "dev-1",
+      "type": "User"
+     },
+     "in_reply_to_id": 1001,
+     "body": "NotFoundException に直しました",
+     "created_at": "2026-09-20T11:00:00Z"
+    },
+    {
+     "id": 1003,
+     "user": {
+      "login": "reviewer-x",
+      "type": "User"
+     },
+     "path": "src/test/java/com/example/app/member/MemberServiceTest.java",
+     "body": "[WANT] 退会会員のケースのテストが無い",
+     "created_at": "2026-09-20T10:05:00Z"
+    },
+    {
+     "id": 1004,
+     "user": {
+      "login": "reviewer-y",
+      "type": "User"
+     },
+     "path": "src/main/java/com/example/app/member/MemberController.java",
+     "body": "[NITS] 変数名 m は member の方が読みやすい",
+     "created_at": "2026-09-20T10:10:00Z"
+    },
+    {
+     "id": 1005,
+     "user": {
+      "login": "ci-bot",
+      "type": "Bot"
+     },
+     "path": "build.gradle",
+     "body": "Coverage 82%",
+     "created_at": "2026-09-20T10:11:00Z"
+    }
+   ],
+   "reviews": [
+    {
+     "id": 2001,
+     "user": {
+      "login": "reviewer-y",
+      "type": "User"
+     },
+     "body": "[Q] 会員 ID の桁チェックはコントローラとサービスのどちらで行う方針ですか？",
+     "submitted_at": "2026-09-20T10:20:00Z"
+    },
+    {
+     "id": 2002,
+     "user": {
+      "login": "reviewer-x",
+      "type": "User"
+     },
+     "body": "",
+     "submitted_at": "2026-09-20T12:00:00Z"
+    }
+   ]
+  },
+  {
+   "number": 15,
+   "title": "注文取込ジョブの再実行対応",
+   "user": {
+    "login": "dev-2",
+    "type": "User"
+   },
+   "comments": [
+    {
+     "id": 1101,
+     "user": {
+      "login": "reviewer-x",
+      "type": "User"
+     },
+     "path": "src/main/resources/mapper/OrderMapper.xml",
+     "body": "[MUST] SQL に ${} を使っていて規約違反（#{} にする）",
+     "created_at": "2026-09-25T09:00:00Z"
+    },
+    {
+     "id": 1102,
+     "user": {
+      "login": "reviewer-y",
+      "type": "User"
+     },
+     "path": "src/main/java/com/example/app/order/batch/OrderImportJob.java",
+     "body": "ここは early return にした方がよさそう",
+     "created_at": "2026-09-25T09:30:00Z"
+    }
+   ],
+   "reviews": []
+  }
+ ]
+}

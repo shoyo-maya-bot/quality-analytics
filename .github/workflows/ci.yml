@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Japanese fonts for charts
+        run: sudo apt-get update -q && sudo apt-get install -y -q fonts-noto-cjk
+      - run: pip install -e ".[dev]"
+      - run: ruff check . && ruff format --check .
+      - run: pytest -q
+      - name: sample pipeline (rules only, no API calls)
+        run: |
+          python samples/make_samples.py
+          qa collect table samples/指摘一覧.xlsx
+          qa collect github --file samples/github_pulls.json
+          qa collect office-review --reviews samples/office-review/reviews --history samples/office-review/history.jsonl
+          qa classify --mode rules
+          qa check
+          qa classify --mode api --overwrite   # 見積もりだけ（--yes なしは送信しない）
+          qa analyze
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sample-report
+          path: output/

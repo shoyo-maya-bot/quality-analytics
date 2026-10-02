@@ -1,0 +1,18 @@
+# LLM による分類（任意・有料）. API キーは .env の ANTHROPIC_API_KEY（コミットしない）.
+provider: anthropic
+model: claude-haiku-4-5-20251001     # 分類は軽いモデルで十分。精度が足りなければ claude-sonnet-5-5
+batch_size: 20                       # 1 回の呼び出しで分類する指摘の数
+max_output_tokens: 4000
+# 費用の上限（USD）. 見積もりがこれを超えると実行しない（--max-cost で上書き）
+max_cost_usd: 5.0
+# 外部に送る前に伏せる文字列（正規表現）. 氏名・社名・システム名などを足す
+redact:
+  - '[\w.+-]+@[\w-]+\.[\w.]+'        # メールアドレス
+  - '0\d{1,4}-\d{1,4}-\d{3,4}'       # 電話番号
+# 料金（USD / 100 万トークン）. 確認日: 2026-10-02（https://platform.claude.com/docs/en/about-claude/pricing）
+# 価格は変わるので、使う前に公式の料金表で確認して更新する
+pricing:
+  claude-haiku-4-5-20251001: {input: 1.0, output: 5.0}
+  claude-sonnet-5-5: {input: 2.0, output: 10.0}
+  claude-opus-5-5: {input: 4.0, output: 20.0}
+batch_discount: 0.5                  # Message Batches API は 50% 引き（このツールは通常の API を使う）
