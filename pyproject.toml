@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quality-analytics"
+version = "0.1.0"
+description = "レビュー指摘を集めて分類（欠陥・ノイズ・確認／観点／真因）し、レビュアー・成果物・真因の傾向を分析する"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "devtools-common @ git+https://github.com/shoyo-maya-bot/devtools-common.git@bfb7f17c5016966058072f4aba3713ab56d146ba",
+  "pandas>=2.2",
+  "matplotlib>=3.8",
+  "openpyxl>=3.1",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+qa = "quality_analytics.cli:entrypoint"
+quality-analytics = "quality_analytics.cli:entrypoint"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"samples/make_samples.py" = ["E501"]
+"tests/*.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 170   # 日本語のメッセージは折り返さない（整形は line-length の 140）

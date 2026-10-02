@@ -1,0 +1,22 @@
+# 指摘表（Excel / CSV / TSV）の列の対応. 左が共通の項目名、右が指摘表の列名.
+# 無い列は書かない（空になる）. 値の固定は fixed に書く.
+sheet: 指摘一覧              # Excel のときのシート名（省略時は先頭のシート）
+header_row: 1                # 見出しの行（1 始まり）
+columns:
+  id: "No"                   # YAML では No・Yes・On・Off は引用符で囲む
+  deliverable: 成果物
+  phase: 工程
+  reviewer: 指摘者
+  author: 作成者
+  severity: 重要度
+  text: 指摘内容
+  response: 対応内容
+  decision: 判定
+  created_at: 指摘日
+fixed:
+  source: table
+  project: sample
+# 値の読み替え（指摘表の値 → 共通の値）
+severity_map: {必須: MUST, 要修正: MUST, 推奨: WANT, 軽微: NITS, 質問: Q}
+decision_map: {対応する: adopted, 対応済: adopted, 採用: adopted, 対応しない: rejected, 不採用: rejected}
+phase_map: {要件定義: RD, 基本設計: BD, 詳細設計: DD, 製造: CD}

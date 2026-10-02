@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+.venv/
+.ruff_cache/
+.pytest_cache/
+.env
+# 実データ（指摘・分類の結果・LLM のキャッシュ）と出力はコミットしない
+data/
+output/
+~$*.xlsx
