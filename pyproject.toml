@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "quality-analytics"
 version = "0.1.0"
 description = "レビュー指摘を集めて分類（欠陥・ノイズ・確認／観点／真因）し、レビュアー・成果物・真因の傾向を分析する"
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
