@@ -31,7 +31,7 @@ jobs:
           qa check
           qa classify --mode api --overwrite   # 見積もりだけ（--yes なしは送信しない）
           qa analyze
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: sample-report
           path: output/
