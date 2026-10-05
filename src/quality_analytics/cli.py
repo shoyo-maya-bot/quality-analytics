@@ -24,7 +24,7 @@ from pathlib import Path
 from devtools_common import cli as common_cli
 from devtools_common.config import load_dotenv, load_structured, require_env
 
-from . import __version__, analyze, charts, model, report, taxonomy
+from . import __version__, analyze, charts, mask, model, report, taxonomy
 from .classify import exchange, llm, rules
 from .sources import github, office_review, table
 
@@ -94,8 +94,23 @@ def _prompt_dir(args) -> Path | None:
     return args.prompt_dir if (args.prompt_dir / "classify.md").is_file() else None
 
 
+def _masker(args) -> mask.Masker:
+    llm_conf = args.config_dir / "llm.yaml"
+    extra = ((load_structured(llm_conf) or {}).get("redact") or []) if llm_conf.is_file() else []  # 互換: llm.yaml の redact
+    try:
+        return mask.load(args.config_dir, extra)
+    except (OSError, ValueError) as e:
+        raise common_cli.UsageError(f"config/mask.yaml: {e}") from None
+
+
+def _load(args):
+    """保存済みの指摘を読み、伏せ字をかける（伏せ字の前のバージョンで貯めたデータも、出力の前に伏せる）."""
+    return model.normalize(_masker(args).frame(model.load(args.data)))
+
+
 def _store(args, new) -> int:
-    merged, added, updated = model.merge(model.load(args.data), new)
+    m = _masker(args)
+    merged, added, updated = model.merge(m.frame(model.load(args.data)), m.frame(model.normalize(new)))
     model.save(merged, args.data)
     print(f"{args.data}: 追加 {added} 件 / 更新 {updated} 件（合計 {len(merged)} 件）")
     return common_cli.ExitCode.OK
@@ -134,7 +149,7 @@ def cmd_collect(args) -> int:
 
 def cmd_classify(args) -> int:
     tax = _tax(args)
-    df = model.load(args.data)
+    df = _load(args)
     if df.empty:
         raise common_cli.UsageError(f"指摘がありません（先に collect）: {args.data}")
     if args.mode == "rules":
@@ -203,7 +218,7 @@ def _run_subset(df, target, tax, conf, send, args):
 
 def cmd_check(args) -> int:
     tax = _tax(args)
-    df = model.load(args.data)
+    df = _load(args)
     problems = []
     for _, r in df[df["type"] != ""].iterrows():
         problems += [f"{r['id']}: {p}" for p in tax.check(r["type"], r["topic"], r["root_cause"], r["phase"])]
@@ -215,7 +230,7 @@ def cmd_check(args) -> int:
 
 def cmd_analyze(args) -> int:
     tax = _tax(args)
-    df = model.load(args.data)
+    df = _load(args)
     if df.empty:
         raise common_cli.UsageError(f"指摘がありません（先に collect）: {args.data}")
     deliverables = args.deliverables or args.config_dir / "deliverables.csv"

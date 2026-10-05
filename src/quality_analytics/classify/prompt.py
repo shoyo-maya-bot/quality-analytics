@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from ..mask import Masker
 from ..taxonomy import Taxonomy
 
 PROMPTS = Path(__file__).resolve().parents[3] / "prompts"
@@ -19,14 +20,21 @@ def _prompt_dir(prompt_dir: Path | None) -> Path:
 
 
 def redact(text: str, patterns: list[str]) -> str:
-    for p in patterns:
-        text = re.sub(p, "＊＊＊", text)
-    return text
+    """互換用. メールアドレス・電話番号（全角を含む）と patterns を伏せる."""
+    return Masker(patterns=patterns).text(text)
 
 
 def build(
-    phase: str, items: pd.DataFrame, tax: Taxonomy, *, redact_patterns: list[str] | None = None, prompt_dir: Path | None = None
+    phase: str,
+    items: pd.DataFrame,
+    tax: Taxonomy,
+    *,
+    redact_patterns: list[str] | None = None,
+    prompt_dir: Path | None = None,
+    masker: Masker | None = None,
 ) -> str:
+    """プロンプトを組み立てる. 指摘は読み込み時に伏せてあるが、送る直前にも成果物名と本文を伏せ直す（二重の守り）."""
+    m = masker or Masker(patterns=redact_patterns or [])
     d = _prompt_dir(prompt_dir)
     template = (d / "classify.md").read_text(encoding="utf-8")
     guide_file = d / f"phase-{phase}.md"
@@ -35,7 +43,7 @@ def build(
     topics = "\n".join(f"- {t}" for t in tax.topics_for(phase))
     causes = "\n".join(f"- {k} {v['name']}: {v['description']}" for k, v in tax.root_causes.items())
     payload = [
-        {"id": r["id"], "severity": r["severity"], "deliverable": r["deliverable"], "text": redact(r["text"], redact_patterns or [])}
+        {"id": r["id"], "severity": r["severity"], "deliverable": m.text(r["deliverable"]), "text": m.text(r["text"])}
         for _, r in items.iterrows()
     ]
     return template.format(

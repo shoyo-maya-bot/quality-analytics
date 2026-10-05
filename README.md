@@ -38,6 +38,23 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 - GitHub: 返信は元の指摘の「対応内容」になり、Bot のコメントは除きます。`--anonymize` でユーザー名を伏せ、
   `--save-raw` で取得した JSON を保存できます（以後は `--file` で再取得なしに試せます）
 - `data/` と `output/` は `.gitignore` 済みです。実データをコミットしないでください
+- 取り込むときに個人情報を伏せます（下の「個人情報の伏せ字」）
+
+### 個人情報の伏せ字
+
+取り込むときに 1 回だけ伏せ、`data/findings.csv` には伏せた値だけを残します。
+LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md`・`dashboard.html`・`summary.xlsx`）はすべてこの値を使います。
+
+| 対象 | 伏せ方 |
+|---|---|
+| 指摘者・作成者の氏名 | `U-xxxxxx`（仮名）に置き換える。本文中の同じ氏名も同じ仮名にする |
+| メールアドレス・電話番号 | `＊＊＊` にする。全角・区切りなし・`+81` も対象。設定では外せない |
+| `config/mask.yaml` の `words`・`patterns` | `＊＊＊` にする。社名・顧客名・システム名などを足す |
+
+- 本文・対応内容・成果物名など、区分（工程・重要度・判定・分類）以外の列はすべて伏せる対象です
+- 伏せ字の前のバージョンで貯めた `data/findings.csv` も、分類・分析の前に伏せます
+- 氏名のまま集計したいときは `config/mask.yaml` の `pseudonymize` を `[]` にします。その場合も `data/` と `output/` は社外に出さないでください
+- 仮名は氏名から決まるので、同じ人は毎回同じ仮名になります。ただし氏名の候補が分かれば仮名から割り出せます。仮名のレポートも社内だけで使ってください
 
 ## 2. 分類する（classify）
 
@@ -66,7 +83,7 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 - API キーは `.env` の `ANTHROPIC_API_KEY`（Anthropic の Console で発行。従量課金）
 - 見積もりが `config/llm.yaml` の `max_cost_usd`（既定 $5）を超えると実行しません（`--max-cost` で変更）
 - 一度分類した指摘は `data/llm-cache.jsonl` に残り、再実行しても再送しません（費用がかからない）
-- 送信前に `redact` のパターン（既定: メールアドレス・電話番号）を伏せます。氏名・社名・システム名などは追加してください。
+- 送る本文は取り込み時に伏せたものです（上の「個人情報の伏せ字」）。送る直前にもメールアドレス・電話番号を伏せ直します。
   **社外の API に指摘の本文を送ってよいか、所属組織のルールを先に確認してください**
 
 指摘 1,000 件の見積もり（このツールの `--mode api` の表示。サンプルと同程度の長さ、20 件ずつ 50 回の呼び出し、入力 約 11 万・出力 約 6 万トークン）:
@@ -115,4 +132,4 @@ Noto Sans CJK JP などの日本語フォントを入れてください（Linux:
 ruff check . && ruff format --check . && pytest
 ```
 
-構成: `sources/`（取り込み）→ `model.py`（共通形式と保存）→ `classify/`（ルール・プロンプト・LLM・Copilot 連携）→ `analyze.py`（集計）→ `charts.py` / `report.py`（出力）
+構成: `sources/`（取り込み）→ `mask.py`（伏せ字）→ `model.py`（共通形式と保存）→ `classify/`（ルール・プロンプト・LLM・Copilot 連携）→ `analyze.py`（集計）→ `charts.py` / `report.py`（出力）

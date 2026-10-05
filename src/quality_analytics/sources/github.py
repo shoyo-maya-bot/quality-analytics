@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import urllib.parse
 import urllib.request
@@ -19,6 +18,7 @@ from typing import Any
 
 import pandas as pd
 
+from ..mask import pseudonym
 from ..model import normalize, split_tag
 
 API = "https://api.github.com"
@@ -76,7 +76,7 @@ def _who(user: dict | None, anonymize: bool) -> str:
     login = (user or {}).get("login", "")
     if not anonymize or not login:
         return login
-    return "U-" + hashlib.sha256(login.encode()).hexdigest()[:6]
+    return pseudonym(login)
 
 
 def to_findings(data: dict, *, phase: str = "CD", only_tagged: bool = False, anonymize: bool = False) -> pd.DataFrame:
