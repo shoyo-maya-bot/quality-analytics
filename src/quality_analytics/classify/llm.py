@@ -1,29 +1,45 @@
-"""LLM API（Anthropic Messages API）による分類. 任意・有料.
+"""LLM API（Anthropic Messages API 互換）による分類. 任意・有料.
+
+通信・再試行・構造化出力・費用の計算は devtools_common.llm（LLMClient）に任せる。
 
 - 実行前に必ず費用を見積もり、上限（max_cost_usd）を超えるなら実行しない
+- 接続先は環境変数 ANTHROPIC_BASE_URL（未設定なら https://api.anthropic.com）。API キーは ANTHROPIC_API_KEY
+  （ゲートウェイ向けに ANTHROPIC_AUTH_TOKEN も使える）
+- 何度も送る長い「分類の定義」（prompts/classify.md と config/taxonomy.yaml・工程の目安）はシステムプロンプトにして
+  プロンプトキャッシュを使う（cache_system）。指摘の本文だけを user に入れる
+- 回答はツール 1 つ（JSON Schema）で受け取る（complete_json）。type・topic・root_cause は定義の値だけを許す（enum）
+- 出力が max_tokens で切れたら、その回の結果は使わずに問題として報告する
 - 送る本文は取り込み時に伏せたもの（mask.py）. 送る直前にもメールアドレス・電話番号と redact のパターンを伏せ直す
-- 結果はキャッシュ（data/llm-cache.jsonl）に残し、同じ本文・同じ分類定義なら再送しない（再実行で費用がかからない）
+- 結果はキャッシュ（data/llm-cache.jsonl）に残し、同じ本文・同じプロンプト（テンプレートと定義）なら再送しない。
+  プロンプトや定義を直すとキャッシュのキーが変わり、分類し直す
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import logging
 import math
-import urllib.request
-from collections.abc import Callable
+import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from devtools_common.llm import Completion, LLMClient, MaxTokensError, Price, SchemaValidationError, price_for
 
 from ..taxonomy import Taxonomy
 from . import prompt
 
-API_URL = "https://api.anthropic.com/v1/messages"
-OUTPUT_TOKENS_PER_ITEM = 60  # {"id","type","topic","root_cause","reason"} 1 件の目安
-Send = Callable[[str, str, int], tuple[str, int, int]]  # (model, prompt, max_tokens) → (回答, 入力トークン, 出力トークン)
+log = logging.getLogger(__name__)
+
+OUTPUT_TOKENS_PER_ITEM = 80  # {"id","type","topic","root_cause","reason"} 1 件の目安（ツールの入力として返る分を含む）
+TOOL_OVERHEAD_TOKENS = 400  # ツールを使わせるときに API が足すシステムプロンプトとスキーマの目安（1 回ごと）
+TOOL_NAME = "record_labels"
+SCHEMA_VERSION = 1  # 回答のスキーマを変えたら上げる（結果のキャッシュのキーに入る）
+COMPARE_MODELS = ["claude-haiku-4-5", "claude-sonnet-5-5", "claude-opus-5-5"]  # 見積もりの表に並べるモデル
 
 
 def estimate_tokens(text: str) -> int:
@@ -32,15 +48,42 @@ def estimate_tokens(text: str) -> int:
     return math.ceil((len(text) - ascii_chars) + ascii_chars / 4)
 
 
+# ---------------------------------------------------------------- 料金
+
+
+def price(model: str, conf: dict[str, Any]) -> Price | None:
+    """モデルの料金. 共通の料金表（devtools_common.llm.PRICES）を使う.
+
+    config/llm.yaml に pricing（旧形式）が残っていれば上書きとして使い、警告を出す。
+    """
+    override = (conf.get("pricing") or {}).get(model)
+    if override:
+        log.warning(
+            "config/llm.yaml の pricing は非推奨です（料金は devtools_common.llm.PRICES の 1 か所で管理します）。"
+            "%s は pricing の値で見積もります",
+            model,
+        )
+        inp = float(override["input"])
+        return Price(
+            inp,
+            float(override["output"]),
+            float(override.get("cache_write", inp * 1.25)),
+            float(override.get("cache_read", inp * 0.1)),
+        )
+    return price_for(model)
+
+
 @dataclass
 class Estimate:
     calls: int
     items: int
-    input_tokens: int
+    input_tokens: int  # キャッシュを使わない入力（指摘・ツール・2 回目以降の定義も、キャッシュが効かない前提で数える）
     output_tokens: int
+    cache_write_tokens: int = 0  # 工程ごとの最初の 1 回の定義（キャッシュの書き込み単価）
 
-    def cost(self, price: dict[str, float]) -> float:
-        return (self.input_tokens * price["input"] + self.output_tokens * price["output"]) / 1_000_000
+    def cost(self, p: Price) -> float:
+        """安全側の見積もり（USD）. 2 回目以降の定義もキャッシュが効かない前提で、通常の入力単価で数える."""
+        return (self.input_tokens * p.input + self.output_tokens * p.output + self.cache_write_tokens * p.cache_write) / 1_000_000
 
 
 def batches(df: pd.DataFrame, size: int) -> list[tuple[str, pd.DataFrame]]:
@@ -52,48 +95,95 @@ def batches(df: pd.DataFrame, size: int) -> list[tuple[str, pd.DataFrame]]:
 
 
 def estimate(df: pd.DataFrame, tax: Taxonomy, conf: dict[str, Any], prompt_dir: Path | None = None) -> Estimate:
-    calls = inp = 0
+    calls = inp = write = 0
+    seen: set[str] = set()
     for phase, g in batches(df, int(conf.get("batch_size", 20))):
-        inp += estimate_tokens(prompt.build(phase, g, tax, redact_patterns=conf.get("redact"), prompt_dir=prompt_dir))
+        system, user = prompt.build_parts(phase, g, tax, redact_patterns=conf.get("redact"), prompt_dir=prompt_dir)
+        sys_tokens = estimate_tokens(system)
+        if phase in seen:
+            inp += sys_tokens
+        else:
+            write += sys_tokens
+            seen.add(phase)
+        inp += estimate_tokens(user) + estimate_tokens(json.dumps(schema(tax, phase, g["id"]), ensure_ascii=False)) + TOOL_OVERHEAD_TOKENS
         calls += 1
-    return Estimate(calls, len(df), inp, len(df) * OUTPUT_TOKENS_PER_ITEM)
+    return Estimate(calls, len(df), inp, len(df) * OUTPUT_TOKENS_PER_ITEM, write)
 
 
 def cost_table(est: Estimate, conf: dict[str, Any]) -> str:
     lines = [
-        f"見積もり: 指摘 {est.items} 件 / 呼び出し {est.calls} 回 / 入力 約 {est.input_tokens:,} トークン / 出力 約 {est.output_tokens:,} トークン",
+        f"見積もり: 指摘 {est.items} 件 / 呼び出し {est.calls} 回 / 入力 約 {est.input_tokens + est.cache_write_tokens:,} トークン"
+        f"（うちキャッシュに書く定義 {est.cache_write_tokens:,}）/ 出力 約 {est.output_tokens:,} トークン",
         "",
-        "| モデル | 費用の見積もり（USD） | Batches API 利用時 |",
-        "|---|---|---|",
+        "| モデル | 費用の見積もり（USD） |",
+        "|---|---|",
     ]
-    disc = float(conf.get("batch_discount", 0.5))
-    for model, price in (conf.get("pricing") or {}).items():
-        c = est.cost(price)
-        mark = "（設定中）" if model == conf.get("model") else ""
-        lines.append(f"| {model}{mark} | ${c:.3f} | ${c * disc:.3f} |")
-    lines += ["", "価格は config/llm.yaml の pricing（確認日をコメントに記載）。使う前に公式の料金表で確かめてください。"]
+    models = [conf["model"], *(m for m in COMPARE_MODELS if not conf["model"].startswith(m))]
+    for model in models:
+        p = price(model, conf) if model == conf["model"] else price_for(model)
+        mark = "（設定中）" if model == conf["model"] else ""
+        lines.append(f"| {model}{mark} | {'料金表にありません' if p is None else f'${est.cost(p):.3f}'} |")
+    lines += [
+        "",
+        "価格は devtools_common.llm.PRICES（確認日をコメントに記載）。使う前に公式の料金表で確かめてください。",
+        "定義はプロンプトキャッシュを使うので、2 回目以降の呼び出しは実際にはこれより安くなります。",
+    ]
     return "\n".join(lines)
 
 
-def http_send(api_key: str) -> Send:
-    def send(model: str, text: str, max_tokens: int) -> tuple[str, int, int]:
-        body = json.dumps({"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": text}]}).encode()
-        req = urllib.request.Request(
-            API_URL,
-            data=body,
-            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=120) as res:  # noqa: S310 — 固定の https URL
-            data = json.loads(res.read().decode("utf-8"))
-        answer = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-        usage = data.get("usage") or {}
-        return answer, int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))
-
-    return send
+# ---------------------------------------------------------------- 回答のスキーマ
 
 
-def _cache_key(tax: Taxonomy, model: str, phase: str, text: str) -> str:
-    return hashlib.sha256(f"{tax.version}\n{model}\n{phase}\n{text}".encode()).hexdigest()[:24]
+def schema(tax: Taxonomy, phase: str, ids: Any) -> dict[str, Any]:
+    """回答の JSON Schema. type・topic・root_cause は定義の値だけ、id は送った指摘の id だけを許す."""
+    label = {
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "enum": [str(i) for i in ids]},
+            "type": {"type": "string", "enum": list(tax.types)},
+            "topic": {"type": "string", "enum": ["", *tax.topics_for(phase)]},
+            "root_cause": {"type": "string", "enum": ["", *tax.root_causes]},
+            "reason": {"type": "string"},
+        },
+        "required": ["id", "type", "topic", "root_cause", "reason"],
+        "additionalProperties": False,
+    }
+    return {
+        "type": "object",
+        "properties": {"labels": {"type": "array", "items": label}},
+        "required": ["labels"],
+        "additionalProperties": False,
+    }
+
+
+def prompt_hash(text: str) -> str:
+    """プロンプト（テンプレート + 分類の定義 + 工程の目安）のハッシュ. 結果のキャッシュのキーに入れる."""
+    return hashlib.sha256(f"schema-v{SCHEMA_VERSION}\n{text}".encode()).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------- クライアント
+
+
+def make_client(conf: dict[str, Any]) -> LLMClient:
+    """config/llm.yaml から LLMClient を作る. 接続先は ANTHROPIC_BASE_URL（LLMClient が読む）."""
+    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        from devtools_common.cli import UsageError
+
+        raise UsageError("環境変数 ANTHROPIC_API_KEY（または ANTHROPIC_AUTH_TOKEN）が設定されていません（.env に書く）")
+    return LLMClient(
+        conf["model"],
+        max_tokens=int(conf.get("max_output_tokens", 4000)),
+        temperature=conf.get("temperature"),
+        cache_system=True,
+        max_retries=int(conf.get("max_retries", 3)),
+    )
+
+
+# ---------------------------------------------------------------- 実行
+
+
+def _cache_key(tax: Taxonomy, model: str, phase: str, text: str, phash: str) -> str:
+    return hashlib.sha256(f"{tax.version}\n{model}\n{phase}\n{phash}\n{text}".encode()).hexdigest()[:24]
 
 
 def _load_cache(path: Path) -> dict[str, dict]:
@@ -114,19 +204,46 @@ class RunResult:
     input_tokens: int
     output_tokens: int
     problems: list[str]
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    calls: int = 0
+
+    def cost(self, p: Price) -> float:
+        return (
+            self.input_tokens * p.input
+            + self.output_tokens * p.output
+            + self.cache_creation_input_tokens * p.cache_write
+            + self.cache_read_input_tokens * p.cache_read
+        ) / 1_000_000
+
+    def add(self, usage: Any) -> None:
+        self.calls += 1
+        self.input_tokens += usage.input_tokens
+        self.output_tokens += usage.output_tokens
+        self.cache_creation_input_tokens += usage.cache_creation_input_tokens
+        self.cache_read_input_tokens += usage.cache_read_input_tokens
+
+
+def _prompt_hashes(df: pd.DataFrame, tax: Taxonomy, conf: dict[str, Any], prompt_dir: Path | None) -> dict[str, str]:
+    """工程 → プロンプトのハッシュ. 指摘を 0 件にして組み立てた全文（テンプレート + 定義 + 工程の目安）から作る."""
+    return {
+        str(phase): prompt_hash(prompt.build(str(phase), df.iloc[0:0], tax, redact_patterns=conf.get("redact"), prompt_dir=prompt_dir))
+        for phase in sorted(set(df["phase"]))
+    }
 
 
 def run(
-    df: pd.DataFrame, tax: Taxonomy, conf: dict[str, Any], send: Send, cache_path: Path, prompt_dir: Path | None = None
+    df: pd.DataFrame, tax: Taxonomy, conf: dict[str, Any], client: LLMClient, cache_path: Path, prompt_dir: Path | None = None
 ) -> tuple[pd.DataFrame, RunResult]:
     model = conf["model"]
     cache = _load_cache(cache_path)
+    hashes = _prompt_hashes(df, tax, conf, prompt_dir)
     out = df.copy()
     res = RunResult(0, 0, 0, 0, [])
     # キャッシュにあるものは送らない
     todo_idx = []
     for i, r in out.iterrows():
-        rec = cache.get(_cache_key(tax, model, r["phase"], r["text"]))
+        rec = cache.get(_cache_key(tax, model, r["phase"], r["text"], hashes[str(r["phase"])]))
         if rec:
             out, probs = prompt.apply(out, [{**rec["label"], "id": r["id"]}], tax, f"llm:{model}")
             res.cached += 1 if not probs else 0
@@ -137,17 +254,25 @@ def run(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with cache_path.open("a", encoding="utf-8") as fh:
         for phase, g in batches(todo, int(conf.get("batch_size", 20))):
-            text = prompt.build(phase, g, tax, redact_patterns=conf.get("redact"), prompt_dir=prompt_dir)
+            system, user = prompt.build_parts(phase, g, tax, redact_patterns=conf.get("redact"), prompt_dir=prompt_dir)
+            user += f"\n\n結果は {TOOL_NAME} ツールの labels に、上のすべての指摘について 1 件ずつ入れて返してください。"
+            sch = schema(tax, phase, g["id"])
             labels: list[dict] = []
-            for _attempt in range(2):  # 形式の誤りは 1 回だけ再試行
-                answer, it, ot = send(model, text, int(conf.get("max_output_tokens", 4000)))
-                res.input_tokens += it
-                res.output_tokens += ot
+            for _attempt in range(2):  # スキーマに合わない回答は 1 回だけ再試行
                 try:
-                    labels = prompt.parse(answer)
+                    with _track_usage(client, res):
+                        data = client.complete_json(user, schema=sch, name=TOOL_NAME, system=system)
+                except SchemaValidationError as e:
+                    res.problems.append(f"{phase} の {len(g)} 件: 回答が定義に合いません（{e}）")
+                    continue
+                except MaxTokensError:
+                    res.problems.append(
+                        f"{phase} の {len(g)} 件: 出力が max_tokens で切れました。"
+                        "config/llm.yaml の batch_size を減らすか max_output_tokens を増やしてください"
+                    )
                     break
-                except ValueError as e:
-                    res.problems.append(f"{phase} の {len(g)} 件: {e}")
+                labels = list(data["labels"])
+                break
             out, probs = prompt.apply(out, labels, tax, f"llm:{model}")
             res.problems += probs
             bad_ids = {p.split(":", 1)[0] for p in probs}
@@ -156,9 +281,38 @@ def run(
                 lab = by_id.get(r["id"])
                 if lab and r["id"] not in bad_ids:
                     rec = {
-                        "key": _cache_key(tax, model, phase, r["text"]),
+                        "key": _cache_key(tax, model, phase, r["text"], hashes[phase]),
                         "label": {k: lab.get(k, "") for k in ("type", "topic", "root_cause", "reason")},
                     }
                     fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                     res.classified += 1
+    log.info(
+        "llm usage: calls=%d in=%d out=%d cache_write=%d cache_read=%d",
+        res.calls,
+        res.input_tokens,
+        res.output_tokens,
+        res.cache_creation_input_tokens,
+        res.cache_read_input_tokens,
+    )
     return out, res
+
+
+@contextlib.contextmanager
+def _track_usage(client: LLMClient, res: RunResult) -> Iterator[None]:
+    """complete_json は結果だけを返すので、中で呼ぶ complete() の Completion からトークン数を足す."""
+    orig = client.complete
+
+    def complete(*a: Any, **kw: Any) -> Completion:
+        try:
+            comp = orig(*a, **kw)
+        except MaxTokensError as e:
+            res.add(e.completion.usage)
+            raise
+        res.add(comp.usage)
+        return comp
+
+    client.complete = complete  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        del client.complete

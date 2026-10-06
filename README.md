@@ -80,22 +80,39 @@ LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md
 
 `qa classify --mode api` は **送信せずに費用の見積もりだけ** 表示します。確認して `--yes` を付けたときだけ送信します。
 
-- API キーは `.env` の `ANTHROPIC_API_KEY`（Anthropic の Console で発行。従量課金）
+- API キーは `.env` の `ANTHROPIC_API_KEY`（Anthropic の Console で発行。従量課金）。社内ゲートウェイ等を使うときは
+  `ANTHROPIC_BASE_URL`（と必要なら `ANTHROPIC_AUTH_TOKEN`）を設定します
 - 見積もりが `config/llm.yaml` の `max_cost_usd`（既定 $5）を超えると実行しません（`--max-cost` で変更）
-- 一度分類した指摘は `data/llm-cache.jsonl` に残り、再実行しても再送しません（費用がかからない）
+- 一度分類した指摘は `data/llm-cache.jsonl` に残り、再実行しても再送しません（費用がかからない）。
+  キャッシュのキーには **プロンプトのハッシュ**（`prompts/classify.md`・工程の目安・`config/taxonomy.yaml` の定義）が入るので、
+  プロンプトや定義を直すと、その工程の指摘は分類し直します
 - 送る本文は取り込み時に伏せたものです（上の「個人情報の伏せ字」）。送る直前にもメールアドレス・電話番号を伏せ直します。
   **社外の API に指摘の本文を送ってよいか、所属組織のルールを先に確認してください**
 
-指摘 1,000 件の見積もり（このツールの `--mode api` の表示。サンプルと同程度の長さ、20 件ずつ 50 回の呼び出し、入力 約 11 万・出力 約 6 万トークン）:
+通信は devtools-common の `devtools_common.llm`（`LLMClient`）を使います。
+
+- 何度も送る「分類の定義」はシステムプロンプトにしてプロンプトキャッシュを使います（2 回目以降が安くなる。
+  ただしモデルごとの最小の長さより短いとキャッシュされません）。指摘の本文だけを毎回送ります
+- 回答はツール（JSON Schema）で受け取り、type・topic（その工程の観点）・root_cause は定義の値だけを受け付けます。
+  合わない回答は 1 回だけ再試行し、それでも合わなければ取り込まずに `NG` として表示します
+- 出力が `max_output_tokens` で切れたら、その回の結果は使わずに `NG` を表示します（`batch_size` を減らすか `max_output_tokens` を増やす）
+- 混雑（429・529 など）や接続エラーは `retry-after` に従って再試行します（`max_retries`。既定 3 回）。
+  届いて処理された後に接続が切れた場合は、再送した分も課金されることがあります
+- 実行後に、呼び出し回数・トークン数（キャッシュの書き込み・読み込みを含む）・実際の費用を表示します。
+  `--log-level INFO` で呼び出しごとのログ（トークン数・所要時間・request-id・費用）も出ます
+
+指摘 1,000 件の見積もり（このツールの `--mode api` の表示。サンプルと同程度の長さ、20 件ずつ 51 回の呼び出し、入力 約 13.5 万・出力 約 8 万トークン。
+キャッシュが効かない前提の安全側の値）:
 
 | モデル | 料金（USD / 100 万トークン、入力 / 出力） | 1,000 件の費用 |
 |---|---|---|
-| Claude Haiku 4.5（既定） | $1 / $5 | 約 $0.41 |
-| Claude Sonnet 5.5 | $2 / $10 | 約 $0.82 |
-| Claude Opus 5.5 | $4 / $20 | 約 $1.64 |
+| Claude Haiku 4.5（既定） | $1 / $5 | 約 $0.54 |
+| Claude Sonnet 5.5 | $2 / $10 | 約 $1.07 |
+| Claude Opus 5.5 | $4 / $20 | 約 $2.14 |
 
-料金は 2026-10-02 に [公式の料金表](https://platform.claude.com/docs/en/about-claude/pricing) で確認した値です。
-変わることがあるので、使う前に確認して `config/llm.yaml` の `pricing` を更新してください。
+料金は devtools-common の共通の料金表（`devtools_common.llm.PRICES`。確認日はそのコメント）を使います。
+変わることがあるので、使う前に [公式の料金表](https://platform.claude.com/docs/en/about-claude/pricing) で確かめてください。
+料金表が古いときは devtools-common を更新します（`config/llm.yaml` に `pricing` を書くと上書きできますが、警告が出ます。非推奨）。
 分類は軽い作業なので既定は Haiku です。精度が足りないと感じたら、まず 50 件ほどを `--limit 50` で Sonnet と比べてください。
 
 ## 3. 分析する（analyze）
@@ -124,6 +141,21 @@ Noto Sans CJK JP などの日本語フォントを入れてください（Linux:
 - **office-review**: レビュー結果と採否を取り込み、観点（`config/checks.yaml`）を増やす根拠にする
 - **ai-coding**: PR の指摘（MUST / WANT / NITS / Q）を取り込み、AI に任せる範囲やガイドラインの見直しに使う
 - 重要度の区分（MUST / WANT / NITS / Q）は 3 つのリポジトリで共通です
+
+### office-review との形式の約束（テストで確かめています）
+
+office-review が書くレビュー結果（`reviews/*_result.md` の表: No / check_id / 重要度 / ロール / 箇所 / 指摘 / 根拠 /
+無効となるケースの確認）と判定（`data/history.jsonl`）の形式は、このリポジトリの
+**コントラクトテスト**（`tests/test_office_review_contract.py`）で確かめています。
+
+- `tests/contract/office-review/` に、office-review が書く形式そのもののファイルを置いています（office-review のサンプルを写したもの、
+  テンプレートから作った境界の例（表の中の `\|` など）、office-review の判定を書く処理で書いた行）
+- `expected.json` は、同じファイルを office-review 自身の読み込み処理で読んだ結果です。取り込み（`sources/office_review.py`）が
+  表のすべての列と判定を同じように読めることを確かめます
+- 判定は office-review と同じく、指摘の指紋（対象・箇所・指摘の本文）で結び付けます。旧形式（指紋なし）の行は、
+  その No にいまある指摘が同じときだけ使います
+- office-review の形式が変わったら、`tests/contract/office-review/` を作り直し（作り方は `expected.json` の `generated_by`）、
+  このテストが通るように取り込みを直します
 
 ## 開発
 

@@ -56,6 +56,29 @@ def build(
     )
 
 
+ITEMS_HEADING = "\n## 指摘\n"
+
+
+def build_parts(
+    phase: str,
+    items: pd.DataFrame,
+    tax: Taxonomy,
+    *,
+    redact_patterns: list[str] | None = None,
+    prompt_dir: Path | None = None,
+    masker: Masker | None = None,
+) -> tuple[str, str]:
+    """API 用に (分類の定義, 指摘) に分ける. 定義は工程ごとに同じなので、システムプロンプトにしてキャッシュする.
+
+    build() の結果を最後の「## 指摘」の見出しで分ける（見出しから後ろが指摘）。見出しが無いテンプレートは全体を指摘として送る。
+    """
+    text = build(phase, items, tax, redact_patterns=redact_patterns, prompt_dir=prompt_dir, masker=masker)
+    at = text.rfind(ITEMS_HEADING)
+    if at < 0:
+        return "", text
+    return text[:at].rstrip(), text[at + 1 :]
+
+
 def parse(answer: str) -> list[dict[str, Any]]:
     """回答から JSON の配列を取り出す（コードブロックで囲まれていてもよい）."""
     m = re.search(r"\[.*\]", answer, re.S)

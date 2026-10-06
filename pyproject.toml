@@ -10,7 +10,7 @@ license = "MIT"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-  "devtools-common @ git+https://github.com/shoyo-maya-bot/devtools-common.git@9a652618269e1df6e8f2f451913d247494a945b9",
+  "devtools-common @ git+https://github.com/shoyo-maya-bot/devtools-common.git@a10e6e9c925ca31d3164d6b99bd753fad4399327",
   "pandas>=2.2",
   "matplotlib>=3.8",
   "openpyxl>=3.1",

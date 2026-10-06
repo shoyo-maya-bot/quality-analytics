@@ -16,26 +16,17 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from devtools_common import llm
 
-MASK = "＊＊＊"
+MASK = llm.MASK  # ＊＊＊
 # 決まった値だけが入る列. ここに無い列（本文・成果物名・未知の列など）はすべて伏せる対象
 KEEP = frozenset({"source", "phase", "severity", "decision", "created_at", "type", "topic", "root_cause", "classified_by"})
 PEOPLE = ("reviewer", "author")
 _PSEUDO = re.compile(r"^U-[0-9a-f]{6}$")
 
-_D = "[0-9０-９]"
-_SEP = r"[\s\-‐‑–—―−－ー.．()（）]"
-_ALNUM = "A-Za-z0-9Ａ-Ｚａ-ｚ０-９"
-EMAIL = re.compile(rf"[{_ALNUM}._%+\-．＿％＋－]+\s*[@＠]\s*[{_ALNUM}\-－]+(?:\s*[.．]\s*[{_ALNUM}\-－]+)+")
-_PHONE = re.compile(rf"(?<![0-9０-９])(?:[+＋]\s*[8８][1１]|[0０])(?:{_SEP}{{0,2}}{_D}){{8,11}}(?![0-9０-９])")
-
-
-def _phone(m: re.Match[str]) -> str:
-    s = m.group(0)
-    digits = len(re.findall(_D, s))
-    if s[0] in "+＋":
-        return MASK if 11 <= digits <= 12 else s  # 81 + 9〜10 桁
-    return MASK if 10 <= digits <= 11 else s
+# メールアドレス・電話番号の検出は devtools_common.llm と共通（全角・区切りなし・+81 を含む）
+EMAIL = llm.EMAIL_RE
+_PHONE = llm.PHONE_RE
 
 
 def pseudonym(name: str) -> str:
@@ -53,21 +44,15 @@ class Masker:
     pseudonymize: list[str] = field(default_factory=lambda: list(PEOPLE))
 
     def __post_init__(self) -> None:
-        self._res = [re.compile(p) for p in self.patterns if p]
-        self._words = sorted({w for w in self.words if w}, key=len, reverse=True)
+        # 語（words）→ メールアドレス・電話番号 → patterns の順に伏せる部分は devtools_common.llm.Masker に任せる
+        self._generic = llm.Masker(patterns=self.patterns, words=self.words, replacement=MASK)
 
     def text(self, s: str, names: dict[str, str] | None = None) -> str:
         if not s:
             return s
-        for name, alias in (names or {}).items():
+        for name, alias in (names or {}).items():  # 氏名 → 仮名（このツール固有）
             s = s.replace(name, alias)
-        for w in self._words:
-            s = s.replace(w, MASK)
-        s = EMAIL.sub(MASK, s)
-        s = _PHONE.sub(_phone, s)
-        for r in self._res:
-            s = r.sub(MASK, s)
-        return s
+        return self._generic.text(s)
 
     def names(self, values: Iterable[str]) -> dict[str, str]:
         """氏名 → 仮名. 長い氏名から置き換える（1 文字の氏名は本文では置き換えない）."""

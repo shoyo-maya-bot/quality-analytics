@@ -185,9 +185,11 @@ def cmd_classify(args) -> int:
 
     est = llm.estimate(target, tax, conf, _prompt_dir(args))
     print(llm.cost_table(est, conf))
-    price = (conf.get("pricing") or {}).get(conf["model"])
-    if not price:
-        raise common_cli.UsageError(f"config/llm.yaml の pricing に {conf['model']} の料金がありません")
+    price = llm.price(conf["model"], conf)
+    if price is None:
+        raise common_cli.UsageError(
+            f"{conf['model']} の料金が devtools_common.llm.PRICES にありません（モデル名を確かめるか、devtools-common を更新してください）"
+        )
     limit = args.max_cost if args.max_cost is not None else float(conf.get("max_cost_usd", 5.0))
     if est.cost(price) > limit:
         raise common_cli.UsageError(
@@ -197,20 +199,21 @@ def cmd_classify(args) -> int:
         print("\n送信していません。内容と費用を確認して、--yes を付けて実行してください。")
         return common_cli.ExitCode.OK
     load_dotenv()
-    send = llm.http_send(require_env("ANTHROPIC_API_KEY"))
-    out, res = _run_subset(df, target, tax, conf, send, args)
+    client = llm.make_client(conf)
+    out, res = _run_subset(df, target, tax, conf, client, args)
     model.save(out, args.data)
-    actual = (res.input_tokens * price["input"] + res.output_tokens * price["output"]) / 1_000_000
     print(
-        f"分類 {res.classified} 件 / キャッシュ利用 {res.cached} 件 / 実際の費用 約 ${actual:.3f}（入力 {res.input_tokens:,} / 出力 {res.output_tokens:,} トークン）"
+        f"分類 {res.classified} 件 / キャッシュ利用 {res.cached} 件 / 呼び出し {res.calls} 回 / 実際の費用 約 ${res.cost(price):.3f}"
+        f"（入力 {res.input_tokens:,} / キャッシュ書き込み {res.cache_creation_input_tokens:,} / キャッシュ読み込み {res.cache_read_input_tokens:,}"
+        f" / 出力 {res.output_tokens:,} トークン）"
     )
     for pr in res.problems:
         print(f"NG {pr}")
     return common_cli.ExitCode.FINDINGS if res.problems else common_cli.ExitCode.OK
 
 
-def _run_subset(df, target, tax, conf, send, args):
-    sub, res = llm.run(target, tax, conf, send, args.data.parent / "llm-cache.jsonl", _prompt_dir(args))
+def _run_subset(df, target, tax, conf, client, args):
+    sub, res = llm.run(target, tax, conf, client, args.data.parent / "llm-cache.jsonl", _prompt_dir(args))
     out = df.set_index("id")
     out.update(sub.set_index("id"))
     return out.reset_index()[model.COLUMNS], res

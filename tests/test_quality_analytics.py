@@ -12,6 +12,8 @@ import pandas as pd
 import pytest
 import yaml
 from devtools_common.cli import run_main
+from devtools_common.llm import FakeLLM, Price
+from fakes import EchoLLM, tool_reply
 
 from quality_analytics import analyze, model, taxonomy
 from quality_analytics.classify import exchange, llm, prompt
@@ -201,61 +203,74 @@ def test_prompt_parse_and_apply():
 
 def test_llm_run_uses_cache_and_retries(tmp_path: Path):
     conf = yaml.safe_load((CONFIG / "llm.yaml").read_text(encoding="utf-8"))
-    sent: list[str] = []
-    answers = iter(
+    client = FakeLLM(
         [
-            "ごめんなさい",  # 形式の誤り → 再試行
-            '[{"id": "1", "type": "A1", "topic": "API・IF", "root_cause": "R2", "reason": "x"}, {"id": "2", "type": "B1", "topic": ""}]',
-            '[{"id": "3", "type": "C1", "topic": "非機能要件"}]',
-        ]
+            {
+                "id": "msg_x",
+                "content": [{"type": "text", "text": "ごめんなさい"}],
+                "stop_reason": "end_turn",
+                "usage": {},
+            },  # ツールを使わない → 再試行
+            tool_reply(
+                [
+                    {"id": "1", "type": "A1", "topic": "API・IF", "root_cause": "R2", "reason": "x"},
+                    {"id": "2", "type": "B1", "topic": "", "root_cause": "", "reason": ""},
+                ]
+            ),
+            tool_reply([{"id": "3", "type": "C1", "topic": "非機能要件", "root_cause": "", "reason": ""}]),
+        ],
+        model=conf["model"],
     )
-
-    def send(model_name: str, text: str, max_tokens: int):
-        sent.append(text)
-        return next(answers), 1000, 100
-
     cache = tmp_path / "cache.jsonl"
-    out, res = llm.run(_sample_df(), TAX, conf, send, cache, ROOT / "prompts")
-    assert (res.classified, res.input_tokens, len(sent)) == (3, 3000, 3)
+    out, res = llm.run(_sample_df(), TAX, conf, client, cache, ROOT / "prompts")
+    assert (res.classified, res.calls, len(client.requests)) == (3, 3, 3)
+    assert res.input_tokens == 200 and res.output_tokens == 100
     assert list(out["type"]) == ["A1", "B1", "C1"]
     assert out.iloc[0]["classified_by"] == f"llm:{conf['model']}"
-    # 2 回目はキャッシュだけで済む（送信しない）
-    out2, res2 = llm.run(_sample_df(), TAX, conf, lambda *a: pytest.fail("送信してはいけない"), cache, ROOT / "prompts")
-    assert (res2.cached, list(out2["type"])) == (3, ["A1", "B1", "C1"])
+    # 2 回目はキャッシュだけで済む（送信しない. FakeLLM は応答が無いと例外）
+    out2, res2 = llm.run(_sample_df(), TAX, conf, FakeLLM([]), cache, ROOT / "prompts")
+    assert (res2.cached, res2.calls, list(out2["type"])) == (3, 0, ["A1", "B1", "C1"])
 
 
 def test_estimate_tokens_and_cost():
     assert llm.estimate_tokens("あいう") == 3
     assert llm.estimate_tokens("abcdefgh") == 2
-    est = llm.Estimate(calls=1, items=1, input_tokens=1_000_000, output_tokens=1_000_000)
-    assert est.cost({"input": 1.0, "output": 5.0}) == 6.0
+    est = llm.Estimate(calls=1, items=1, input_tokens=1_000_000, output_tokens=1_000_000, cache_write_tokens=1_000_000)
+    assert est.cost(Price(input=1.0, output=5.0, cache_write=1.25, cache_read=0.1)) == 7.25
 
 
 def test_api_mode_without_yes_does_not_send(tmp_path: Path, samples: Path, monkeypatch: pytest.MonkeyPatch):
     collect_all(tmp_path, samples)
-    monkeypatch.setattr(llm, "http_send", lambda key: pytest.fail("送信してはいけない"))
+    monkeypatch.setattr(llm, "make_client", lambda conf: pytest.fail("送信してはいけない"))
     rc, out = run(tmp_path, "classify", "--mode", "api")
     assert rc == 0 and "見積もり" in out and "送信していません" in out
+    assert "claude-haiku-4-5-20251001（設定中）" in out  # 料金は共通の料金表（devtools_common.llm.PRICES）
     rc, out = run(tmp_path, "classify", "--mode", "api", "--max-cost", "0.000001", "--yes")
     assert rc == 2 and "上限" in out
 
 
 def test_api_mode_with_yes(tmp_path: Path, samples: Path, monkeypatch: pytest.MonkeyPatch):
     collect_all(tmp_path, samples)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    clients: list[EchoLLM] = []
 
-    def fake_send(key):
-        def send(model_name, text, max_tokens):
-            items = json.loads(text[text.index("## 指摘") + len("## 指摘") :])
-            return json.dumps([{"id": i["id"], "type": "C1", "topic": ""} for i in items]), 500, 50
+    def make_client(conf):
+        clients.append(EchoLLM(lambda item: {"type": "C1", "topic": "", "root_cause": "", "reason": ""}, model=conf["model"]))
+        return clients[-1]
 
-        return send
-
-    monkeypatch.setattr(llm, "http_send", fake_send)
+    monkeypatch.setattr(llm, "make_client", make_client)
     rc, out = run(tmp_path, "classify", "--mode", "api", "--yes", "--limit", "5")
-    assert rc == 0 and "分類 5 件" in out
+    assert rc == 0 and "分類 5 件" in out and "実際の費用" in out
     df = model.load(tmp_path / "data/findings.csv")
     assert (df["type"] == "C1").sum() == 5 and len(df) == 50
+
+
+def test_api_mode_requires_api_key(tmp_path: Path, samples: Path, monkeypatch: pytest.MonkeyPatch):
+    collect_all(tmp_path, samples)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.chdir(tmp_path)  # .env を読まない
+    rc, out = run(tmp_path, "classify", "--mode", "api", "--yes", "--limit", "1")
+    assert rc == 2 and "ANTHROPIC_API_KEY" in out
 
 
 def test_export_and_import(tmp_path: Path, samples: Path):

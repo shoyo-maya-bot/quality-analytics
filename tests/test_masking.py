@@ -12,6 +12,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from devtools_common.cli import run_main
+from fakes import EchoLLM
 
 from quality_analytics import mask, model, taxonomy
 from quality_analytics.classify import llm, prompt
@@ -168,20 +169,16 @@ def test_every_outbound_path_is_masked(tmp_path: Path, config_dir: Path, monkeyp
     for f in (tmp_path / "prompts").glob("*.md"):
         _assert_clean(f.name, f.read_text(encoding="utf-8"))
 
-    # LLM API に送る本文（送信はしない. 送ろうとした本文を記録するだけ）
-    sent: list[str] = []
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    # LLM API に送る本文（送信はしない. 送ろうとしたリクエストを記録するだけ）
+    clients: list[EchoLLM] = []
 
-    def fake_send(key):
-        def send(model_name, text, max_tokens):
-            sent.append(text)
-            items = json.loads(text[text.index("## 指摘") + len("## 指摘") :])
-            return json.dumps([{"id": i["id"], "type": "B1", "topic": ""} for i in items]), 10, 10
+    def make_client(conf):
+        clients.append(EchoLLM(lambda item: {"type": "B1", "topic": "", "root_cause": "", "reason": ""}, model=conf["model"]))
+        return clients[-1]
 
-        return send
-
-    monkeypatch.setattr(llm, "http_send", fake_send)
+    monkeypatch.setattr(llm, "make_client", make_client)
     rc, out = _run(tmp_path, config_dir, "classify", "--mode", "api", "--yes")
+    sent = [json.dumps(r, ensure_ascii=False) for c in clients for r in c.requests]
     assert rc == 0 and sent
     _assert_clean("LLM のプロンプト", "\n".join(sent))
 
