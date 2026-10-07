@@ -4,6 +4,8 @@
 - メールアドレス・電話番号は、全角・区切りなし・+81 も含めて常に伏せる（設定で外せない）
 - config/mask.yaml の words（社名・システム名など）と patterns（正規表現）も伏せる
 - 区分の列（KEEP）以外は、未知の列も含めてすべて伏せる対象にする（既定で伏せる）
+- id は伏せ字で別の指摘と同じ値にならないように、「:」で区切った部分ごとに伏せ、伏せた部分には元の値の
+  ハッシュ（8 桁）を付ける（例: table:指摘一覧_A社:1 → table:指摘一覧_＊＊＊~3f2a9c1b:1）. 何度かけても同じ値になる
 """
 
 from __future__ import annotations
@@ -33,6 +35,10 @@ def pseudonym(name: str) -> str:
     return "U-" + hashlib.sha256(name.encode()).hexdigest()[:6]
 
 
+def _digest(s: str, n: int = 8) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()[:n]
+
+
 def _is_kept_name(v: str) -> bool:
     return not v or bool(_PSEUDO.match(v)) or v.startswith("AI:")
 
@@ -54,6 +60,19 @@ class Masker:
             s = s.replace(name, alias)
         return self._generic.text(s)
 
+    def ident(self, s: str, names: dict[str, str] | None = None) -> str:
+        """id の伏せ字. 伏せた部分に元の値のハッシュを付けて、別の id と同じ値にならないようにする（何度かけても同じ）."""
+        if not s:
+            return s
+        parts = []
+        for part in s.split(":"):
+            masked = self.text(part, names)
+            parts.append(part if masked == part else f"{masked}~{_digest(part)}")
+        out = ":".join(parts)
+        if self.text(out, names) != out:  # 「:」をまたぐ語など. 部分ごとでは伏せきれないときは全体をハッシュにする
+            return f"masked~{_digest(s, 16)}"
+        return out
+
     def names(self, values: Iterable[str]) -> dict[str, str]:
         """氏名 → 仮名. 長い氏名から置き換える（1 文字の氏名は本文では置き換えない）."""
         found = {v.strip() for v in values if not _is_kept_name(v.strip())}
@@ -66,7 +85,9 @@ class Masker:
         for c in out.columns:
             if c in KEEP:
                 continue
-            if c in cols:
+            if c == "id":
+                out[c] = [self.ident(str(v), names) if isinstance(v, str) else v for v in out[c]]
+            elif c in cols:
                 out[c] = [v if _is_kept_name(str(v).strip()) else pseudonym(str(v).strip()) for v in out[c].astype(str)]
             else:
                 out[c] = [self.text(str(v), names) if isinstance(v, str) else v for v in out[c]]

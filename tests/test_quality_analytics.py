@@ -76,11 +76,11 @@ def test_split_tag(text, expected):
 def test_merge_keeps_classification_when_text_is_same():
     base = model.normalize(pd.DataFrame([{"id": "a", "text": "x", "type": "A1", "classified_by": "human"}]))
     again = model.normalize(pd.DataFrame([{"id": "a", "text": "x", "decision": "adopted"}, {"id": "b", "text": "y"}]))
-    merged, added, updated = model.merge(base, again)
+    merged, added, updated, _ = model.merge(base, again)
     row = merged.set_index("id").loc["a"]
     assert (added, updated, row["type"], row["decision"]) == (1, 1, "A1", "adopted")
     changed = model.normalize(pd.DataFrame([{"id": "a", "text": "x を直した"}]))
-    merged, _, _ = model.merge(base, changed)
+    merged, _, _, _ = model.merge(base, changed)
     assert merged.set_index("id").loc["a", "type"] == ""  # 本文が変わったら分類し直す
 
 
