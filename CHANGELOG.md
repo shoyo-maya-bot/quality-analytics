@@ -1,0 +1,32 @@
+# 変更履歴
+
+## 未リリース
+
+### 変更（office-review の取り込み）
+
+`qa collect office-review` の読み込みを、devtools-common の共通部品 `devtools_common.review_results`（office-review と同じ部品）に
+置き換えました。office-review と同じ規則で読むため、次の点で取り込みの結果が変わります。
+
+- **BOM 付きのファイルを読める**: BOM 付き UTF-8 のレビュー結果は、これまで Front Matter を読めず、成果物名がファイル名・
+  作成日が空になっていました。今後は Front Matter（`target`・`type`・`reviewed_at`）を読みます。BOM 付きの history.jsonl は、
+  これまで JSON の誤りで取り込み全体が止まっていましたが、今後は読めます
+- **末尾が `\\|` のセル**: `\\|` は「文字の `\`」の後ろの区切りとして扱います（これまでは `\|`（セルの中の `|`）と見なし、
+  セルがつながって列がずれていました）。例: `| 2. 入力 D:\in\\| 入力フォルダの… |` は、箇所 `2. 入力 D:\in\\`・指摘 `入力フォルダの…`。
+  セルの文字は `\|` だけを `|` に戻し、ほかのエスケープはそのまま残します（office-review と同じ。指紋が変わらないように）
+- **壊れた行を飛ばす**: 表の列数が違う行・No が数字でない行は、これまで空の列や `#x` のような id のまま取り込んでいましたが、
+  今後は「警告: <ファイル名>:<行番号> を飛ばしました（理由）」を標準エラーに出して飛ばします。history.jsonl の壊れた行
+  （JSON でない・オブジェクトでない・`decision`（adopted / rejected）か `check_id` が無い）は、これまで取り込み全体が止まるか
+  そのまま使っていましたが、今後は行番号付きで警告して飛ばします（office-review と同じ。`check_id` の無い判定の行は使いません）
+- 指摘の表は、列名が office-review の 8 列（No / check_id / 重要度 / ロール / 箇所 / 指摘 / 根拠 / 無効となるケースの確認）と
+  この順で一致する最初の表だけを読みます（office-review と同じ）
+
+### 修正
+
+- `qa collect office-review` で取り込み直したとき、消したレビュー結果（ファイル・行）の指摘が `data/findings.csv` に残り、
+  二重に数えていた不具合を直しました。前回取り込んだ office-review の指摘のうち今回に無いものは削除します
+  （指摘表の取り込み直しと同じ扱い。ほかの取り込み元の指摘は消しません）
+
+### 依存
+
+- devtools-common の固定を `2e25f8a` → `cbe97d5`（`devtools_common.review_results` を含む版）に更新
+- サンプル（`samples/office-review/history.jsonl`）を office-review の data/history.jsonl と同じ形式（`check_id` 付き）にしました

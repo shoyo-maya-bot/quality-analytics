@@ -303,10 +303,38 @@ reviewer: "Copilot（確認: <担当者>）"
 | 6 | API-005 | Q | infra | 全体 | 1 会員の注文件数の上限はどの程度を想定しているか | 記載なし | 非機能要件書の参照も無い |
 """
 
+# office-review の data/history.jsonl と同じ形式（decision と check_id は必須。無い行は警告して飛ばす）
 HISTORY = [
-    {"key": "2026-10-02_order-api_result.md#1", "decision": "adopted"},
-    {"key": "2026-10-02_order-api_result.md#4", "decision": "rejected"},
-    {"key": "2026-10-02_order-api_result.md#5", "decision": "adopted"},
+    {
+        "key": "2026-10-02_order-api_result.md#1",
+        "decision": "adopted",
+        "check_id": "ALL-003",
+        "severity": "MUST",
+        "role": "spec_manager",
+        "doc_type": "api",
+        "finding": "「適宜ページングする」では 1 ページの件数と並び順の安定性が決まらない",
+        "triaged_at": "2026-10-02",
+    },
+    {
+        "key": "2026-10-02_order-api_result.md#4",
+        "decision": "rejected",
+        "check_id": "API-007",
+        "severity": "WANT",
+        "role": "dba",
+        "doc_type": "api",
+        "finding": "参照テーブルと検索条件・使うインデックスが書かれていない",
+        "triaged_at": "2026-10-02",
+    },
+    {
+        "key": "2026-10-02_order-api_result.md#5",
+        "decision": "adopted",
+        "check_id": "NEW",
+        "severity": "WANT",
+        "role": "ops",
+        "doc_type": "api",
+        "finding": "from の日付はどのタイムゾーンで判定するか（日付の境界）",
+        "triaged_at": "2026-10-02",
+    },
 ]
 
 

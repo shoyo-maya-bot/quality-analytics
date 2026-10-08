@@ -1,3 +1,3 @@
-{"key": "2026-10-02_order-api_result.md#1", "decision": "adopted"}
-{"key": "2026-10-02_order-api_result.md#4", "decision": "rejected"}
-{"key": "2026-10-02_order-api_result.md#5", "decision": "adopted"}
+{"key": "2026-10-02_order-api_result.md#1", "decision": "adopted", "check_id": "ALL-003", "severity": "MUST", "role": "spec_manager", "doc_type": "api", "finding": "「適宜ページングする」では 1 ページの件数と並び順の安定性が決まらない", "triaged_at": "2026-10-02"}
+{"key": "2026-10-02_order-api_result.md#4", "decision": "rejected", "check_id": "API-007", "severity": "WANT", "role": "dba", "doc_type": "api", "finding": "参照テーブルと検索条件・使うインデックスが書かれていない", "triaged_at": "2026-10-02"}
+{"key": "2026-10-02_order-api_result.md#5", "decision": "adopted", "check_id": "NEW", "severity": "WANT", "role": "ops", "doc_type": "api", "finding": "from の日付はどのタイムゾーンで判定するか（日付の境界）", "triaged_at": "2026-10-02"}
