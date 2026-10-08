@@ -1,5 +1,5 @@
 {
- "generated_by": "office-review 2e9a44b: review_harness.results.load_all / history.append / history.load_records / history.resolve",
+ "generated_by": "office-review 424c01be3fd54913f7a62ed24da0efe287b69b34: review_harness.results.load_all / history.append / history.load_records / history.resolve（fingerprint は旧指紋 = ReviewItem.fingerprint_v1、fingerprint_v2 は ReviewItem.fingerprint）",
  "items": [
   {
    "file": "2026-10-02_order-api_result.md",
@@ -15,7 +15,8 @@
    "basis": "3. 処理「件数が多い場合は適宜ページングする」",
    "invalid_check": "例示ではなく仕様の記載のため該当しない",
    "key": "2026-10-02_order-api_result.md#1",
-   "fingerprint": "fp:664a57a03c794ea3"
+   "fingerprint": "fp:664a57a03c794ea3",
+   "fingerprint_v2": "fp:c7ea09d0dea99db8"
   },
   {
    "file": "2026-10-02_order-api_result.md",
@@ -31,7 +32,8 @@
    "basis": "4. 出力「エラー時は共通のエラー応答」とあるが参照先が無い",
    "invalid_check": "共通エラー仕様書の参照が無いため該当しない",
    "key": "2026-10-02_order-api_result.md#2",
-   "fingerprint": "fp:f7ef77d6d07c6b1a"
+   "fingerprint": "fp:f7ef77d6d07c6b1a",
+   "fingerprint_v2": "fp:027fb9d2d05ac2bd"
   },
   {
    "file": "2026-10-02_order-api_result.md",
@@ -47,7 +49,8 @@
    "basis": "2. 入力 memberId（必須）",
    "invalid_check": "公開情報ではないため該当しない",
    "key": "2026-10-02_order-api_result.md#3",
-   "fingerprint": "fp:1e490235138b1447"
+   "fingerprint": "fp:1e490235138b1447",
+   "fingerprint_v2": "fp:eb0eb2efa3642c52"
   },
   {
    "file": "2026-10-02_order-api_result.md",
@@ -63,7 +66,8 @@
    "basis": "3. 処理 1",
    "invalid_check": "DB を使う API のため該当しない",
    "key": "2026-10-02_order-api_result.md#4",
-   "fingerprint": "fp:0ce93557283e3912"
+   "fingerprint": "fp:0ce93557283e3912",
+   "fingerprint_v2": "fp:3314d9fea73b0448"
   },
   {
    "file": "2026-10-02_order-api_result.md",
@@ -79,7 +83,8 @@
    "basis": "2. 入力 from",
    "invalid_check": "既存の観点に無い",
    "key": "2026-10-02_order-api_result.md#5",
-   "fingerprint": "fp:766ecf4b8f721096"
+   "fingerprint": "fp:766ecf4b8f721096",
+   "fingerprint_v2": "fp:3927a85eb7775e6b"
   },
   {
    "file": "2026-10-02_order-api_result.md",
@@ -95,7 +100,8 @@
    "basis": "記載なし",
    "invalid_check": "非機能要件書の参照も無い",
    "key": "2026-10-02_order-api_result.md#6",
-   "fingerprint": "fp:fa8d61e500b39b35"
+   "fingerprint": "fp:fa8d61e500b39b35",
+   "fingerprint_v2": "fp:be9b2839564e5144"
   },
   {
    "file": "2026-10-03_stock-db_result.md",
@@ -111,7 +117,8 @@
    "basis": "2. テーブル定義「区分（A|B|C）」",
    "invalid_check": "値の一覧が仕様に書かれているため該当しない",
    "key": "2026-10-03_stock-db_result.md#1",
-   "fingerprint": "fp:0863945210a910f9"
+   "fingerprint": "fp:0863945210a910f9",
+   "fingerprint_v2": "fp:c9bb312fd5533684"
   },
   {
    "file": "2026-10-03_stock-db_result.md",
@@ -127,7 +134,8 @@
    "basis": "3. 配置「C:\\work\\stock」",
    "invalid_check": "表記の揺れのため該当しない",
    "key": "2026-10-03_stock-db_result.md#2",
-   "fingerprint": "fp:a0384455353a337f"
+   "fingerprint": "fp:a0384455353a337f",
+   "fingerprint_v2": "fp:d41fb33cb15c0bdb"
   },
   {
    "file": "2026-10-03_stock-db_result.md",
@@ -143,7 +151,8 @@
    "basis": "記載なし",
    "invalid_check": "既存の観点に無い",
    "key": "2026-10-03_stock-db_result.md#3",
-   "fingerprint": "fp:fb01dfcbc9ba2042"
+   "fingerprint": "fp:fb01dfcbc9ba2042",
+   "fingerprint_v2": "fp:a532ccdac6a444b0"
   },
   {
    "file": "2026-10-04_edge_result.md",
@@ -159,7 +168,8 @@
    "basis": "2. 入力「D:\\in\\」",
    "invalid_check": "該当しない",
    "key": "2026-10-04_edge_result.md#1",
-   "fingerprint": "fp:b578410aff1f85fb"
+   "fingerprint": "fp:b578410aff1f85fb",
+   "fingerprint_v2": "fp:757d2f7b60958691"
   },
   {
    "file": "2026-10-04_edge_result.md",
@@ -175,7 +185,8 @@
    "basis": "3. 出力",
    "invalid_check": "確認\\\\",
    "key": "2026-10-04_edge_result.md#2",
-   "fingerprint": "fp:f7d4c9e01f74a225"
+   "fingerprint": "fp:f7d4c9e01f74a225",
+   "fingerprint_v2": "fp:db86703ec63892e4"
   },
   {
    "file": "2026-10-04_edge_result.md",
@@ -191,7 +202,59 @@
    "basis": "4. 再実行",
    "invalid_check": "既存の観点に無い",
    "key": "2026-10-04_edge_result.md#5",
-   "fingerprint": "fp:6afedb1e4ca5dd26"
+   "fingerprint": "fp:6afedb1e4ca5dd26",
+   "fingerprint_v2": "fp:abacd481748f072c"
+  },
+  {
+   "file": "2026-10-05_member-api_result.md",
+   "target": "inputs/api/member-api.md",
+   "doc_type": "api",
+   "reviewed_at": "2026-10-05",
+   "no": 1,
+   "check_id": "API-002",
+   "severity": "MUST",
+   "role": "spec_manager",
+   "location": "3. 入力",
+   "finding": "検索条件の必須・任意が書かれていない",
+   "basis": "3. 入力「検索条件」",
+   "invalid_check": "入力ありのため該当しない",
+   "key": "2026-10-05_member-api_result.md#1",
+   "fingerprint": "fp:873e91698bc8da86",
+   "fingerprint_v2": "fp:078c80a1fc6a4e09"
+  },
+  {
+   "file": "2026-10-05_member-api_result.md",
+   "target": "inputs/api/member-api.md",
+   "doc_type": "api",
+   "reviewed_at": "2026-10-05",
+   "no": 2,
+   "check_id": "API-007",
+   "severity": "WANT",
+   "role": "dba",
+   "location": "3. 入力",
+   "finding": "検索条件の必須・任意が書かれていない",
+   "basis": "3. 入力「検索条件」",
+   "invalid_check": "DB を使う API のため該当しない",
+   "key": "2026-10-05_member-api_result.md#2",
+   "fingerprint": "fp:873e91698bc8da86",
+   "fingerprint_v2": "fp:c9ee22f924511b5e"
+  },
+  {
+   "file": "2026-10-05_member-api_result.md",
+   "target": "inputs/api/member-api.md",
+   "doc_type": "api",
+   "reviewed_at": "2026-10-05",
+   "no": 3,
+   "check_id": "ALL-003",
+   "severity": "MUST",
+   "role": "spec_manager",
+   "location": "4. 処理",
+   "finding": "「必要に応じて」の条件が書かれていない",
+   "basis": "4. 処理「必要に応じて再送する」",
+   "invalid_check": "例示ではなく仕様の記載のため該当しない",
+   "key": "2026-10-05_member-api_result.md#3",
+   "fingerprint": "fp:8009f18e7beec56a",
+   "fingerprint_v2": "fp:ba05be3ba2af1891"
   }
  ],
  "decisions": {
@@ -202,7 +265,10 @@
   "2026-10-03_stock-db_result.md#2": "rejected",
   "2026-10-04_edge_result.md#1": "adopted",
   "2026-10-04_edge_result.md#2": "rejected",
-  "2026-10-04_edge_result.md#5": "adopted"
+  "2026-10-04_edge_result.md#5": "adopted",
+  "2026-10-05_member-api_result.md#1": "adopted",
+  "2026-10-05_member-api_result.md#2": "rejected",
+  "2026-10-05_member-api_result.md#3": "adopted"
  },
  "orphans": [],
  "warnings": [

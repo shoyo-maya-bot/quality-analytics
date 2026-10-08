@@ -2,6 +2,14 @@
 
 ## 未リリース
 
+### 変更（office-review の判定の結び付け: 指紋 v2）
+
+- `qa collect office-review` の判定（history.jsonl）の結び付けを、office-review と同じ **指紋 v2**（対象・箇所・本文・ロール・観点）に
+  しました（devtools-common の `resolve_history_v2`）。これまでは旧指紋（対象・箇所・本文）で引いていたため、同じ箇所・同じ本文で
+  ロールや観点が違う 2 件の指摘に、片方の判定が両方に付いていました。`fingerprint_v2` の無い行（office-review 0.2.0 まで）は
+  旧指紋で結び付け、同じ旧指紋の指摘が複数あればロールと観点が一致するものに結び付けます
+- devtools-common の固定を `cbe97d5` → `6a263b8`（指紋 v2 の共通部品、history.jsonl の型の誤った行・識別子の無い行を飛ばす）に更新
+
 ### 変更（office-review の取り込み）
 
 `qa collect office-review` の読み込みを、devtools-common の共通部品 `devtools_common.review_results`（office-review と同じ部品）に

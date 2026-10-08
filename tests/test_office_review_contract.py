@@ -5,10 +5,14 @@ tests/contract/office-review/ は office-review が書く形式そのもの:
 - reviews/2026-10-03_stock-db_result.md: office-review のテンプレート（.github/prompts/review.prompt.md）から作った境界の例
   （表の中の \\|、\\ を含むパス）。office-review の harness lint で error 0 を確かめてある
 - reviews/2026-10-04_edge_result.md: 読み込みの境界の例（BOM 付き、末尾が \\\\| のセル、No が数字でない行・列数違いの行）
-- history.jsonl: 先頭に BOM。壊れた行（JSON でない・オブジェクトでない・decision が不正）を含み、
-  残りの行は office-review の history.append（判定を書く処理）で書いた新しい形式（fingerprint 付き）
-- expected.json: 同じファイルを office-review の results.load_all / history.load_records / history.resolve で読んだ結果
-  （警告の文言を含む。作り方は expected.json の generated_by）
+- reviews/2026-10-05_member-api_result.md: 指紋 v2 の境界の例。No 1 と 2 は箇所・本文が同じでロールと観点が違う
+  （旧指紋は同じ、指紋 v2 は別）
+- history.jsonl: 先頭に BOM。壊れた行（JSON でない・オブジェクトでない・decision が不正）を含む。ほかの行は
+  office-review の history.append（判定を書く処理）で書いた形式: 指紋なしの古い行、fingerprint（旧指紋）だけの行
+  （0.2.0 の形。旧指紋が同じ指摘が 2 つあり、ロールと観点で決まる行・決まらない行を含む）、今の形（fingerprint と fingerprint_v2）
+- expected.json: 同じファイルを office-review の main（generated_by の SHA）の results.load_all / history.load_records /
+  history.resolve で読んだ結果（警告の文言を含む）。items の fingerprint は旧指紋、fingerprint_v2 は office-review が
+  判定の結び付けに使う指紋
 
 読み込みは devtools-common の共通部品（devtools_common.review_results）。office-review の形式が変わったら、
 ここのファイルと expected.json を作り直し、このテストが通ることを確かめる。
@@ -38,7 +42,8 @@ FIELD_OF_COLUMN = {
 
 def _parsed() -> dict[str, dict]:
     return {
-        i.key: dict(vars(i), key=i.key, fingerprint=i.fingerprint) for i in office_review.load_items(CONTRACT / "reviews", lambda _m: None)
+        i.key: dict(vars(i), key=i.key, fingerprint=i.fingerprint_v1, fingerprint_v2=i.fingerprint_v2)
+        for i in office_review.load_items(CONTRACT / "reviews", lambda _m: None)
     }
 
 
@@ -53,6 +58,8 @@ def test_parser_reads_every_column():
     for exp in EXPECTED["items"]:
         assert parsed[exp["key"]] == exp, exp["key"]  # 表のすべての列・Front Matter・指紋
         assert office_review.fingerprint(exp["target"] or exp["file"], exp["location"], exp["finding"]) == exp["fingerprint"]
+        target = exp["target"] or exp["file"]
+        assert office_review.fingerprint_v2(target, exp["location"], exp["finding"], exp["role"], exp["check_id"]) == exp["fingerprint_v2"]
 
 
 def test_escaped_pipes_and_backslashes():
@@ -112,3 +119,29 @@ def test_legacy_decision_is_not_moved_to_another_finding(tmp_path: Path):
     hist.write_text(json.dumps({**rec, "finding": "別の指摘"}, ensure_ascii=False) + "\n", encoding="utf-8")
     df = office_review.read(CONTRACT / "reviews", hist).set_index("id")
     assert df.loc[f"office-review:{rec['key']}", "decision"] == ""
+
+
+def test_decisions_are_linked_by_fingerprint_v2_like_office_review():
+    """同じ箇所・同じ本文でロールと観点が違う 2 件は、別の指摘として判定を引く（office-review の history.resolve と同じ）.
+
+    旧指紋（対象・箇所・本文）で結び付けると、No 1 の判定（adopted）が No 2 にも付いてしまう。
+    """
+    df = office_review.read(CONTRACT / "reviews", CONTRACT / "history.jsonl").set_index("id")
+    one, two = (df.loc[f"office-review:2026-10-05_member-api_result.md#{n}"] for n in (1, 2))
+    assert (one["reviewer"], two["reviewer"]) == ("AI:spec_manager", "AI:dba")
+    assert one["decision"] == "adopted"  # fingerprint_v2 の行
+    assert two["decision"] == "rejected"  # 旧指紋だけの行（ロール dba・API-007 が一致する No 2 に結び付く）
+    assert df.loc["office-review:2026-10-05_member-api_result.md#3", "decision"] == "adopted"  # 旧指紋が同じ指摘が 1 つ
+
+
+def test_old_fingerprint_row_that_cannot_be_decided_is_not_linked(tmp_path: Path):
+    """旧指紋だけの行で、同じ旧指紋の指摘が複数あり、ロールと観点でも決められないときは、どちらにも結び付けない."""
+    lines = (CONTRACT / "history.jsonl").read_text(encoding="utf-8-sig").splitlines()
+    recs = [json.loads(ln) for ln in lines if '"member-api_result.md#1"' in ln.replace("2026-10-05_", "")]
+    ambiguous = [r for r in recs if "fingerprint_v2" not in r]
+    assert len(ambiguous) == 1 and (ambiguous[0]["role"], ambiguous[0]["check_id"]) == ("ops", "NEW")
+    hist = tmp_path / "history.jsonl"
+    hist.write_text(json.dumps(ambiguous[0], ensure_ascii=False) + "\n", encoding="utf-8")
+    df = office_review.read(CONTRACT / "reviews", hist).set_index("id")
+    assert df.loc["office-review:2026-10-05_member-api_result.md#1", "decision"] == ""
+    assert df.loc["office-review:2026-10-05_member-api_result.md#2", "decision"] == ""
