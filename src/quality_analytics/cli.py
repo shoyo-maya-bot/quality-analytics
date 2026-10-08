@@ -128,7 +128,7 @@ def _store(args, new, scopes: list[str] | None = None) -> int:
     model.save(merged, args.data)
     print(f"{args.data}: 追加 {added} 件 / 更新 {updated} 件 / 削除 {deleted} 件（合計 {len(merged)} 件）")
     if deleted:
-        print("削除: 取り込み元の表から無くなった行です（分類の結果も消えます）")
+        print("削除: 取り込み元（表・レビュー結果）から無くなった行です（分類の結果も消えます）")
     return common_cli.ExitCode.OK
 
 
@@ -170,7 +170,8 @@ def cmd_collect(args) -> int:
         )
     if not args.reviews.is_dir():
         raise common_cli.UsageError(f"フォルダが見つかりません: {args.reviews}")
-    return _store(args, office_review.read(args.reviews, args.history))
+    # 取り込み元の範囲は office-review の指摘すべて: 消したレビュー結果（ファイル・行）の指摘は削除する（指摘表と同じ扱い）
+    return _store(args, office_review.read(args.reviews, args.history), [office_review.SCOPE])
 
 
 def cmd_classify(args) -> int:

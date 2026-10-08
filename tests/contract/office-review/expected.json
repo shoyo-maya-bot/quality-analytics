@@ -1,5 +1,5 @@
 {
- "generated_by": "office-review cb567c9: review_harness.results.parse / history.append / history.load",
+ "generated_by": "office-review 2e9a44b: review_harness.results.load_all / history.append / history.load_records / history.resolve",
  "items": [
   {
    "file": "2026-10-02_order-api_result.md",
@@ -144,14 +144,70 @@
    "invalid_check": "既存の観点に無い",
    "key": "2026-10-03_stock-db_result.md#3",
    "fingerprint": "fp:fb01dfcbc9ba2042"
+  },
+  {
+   "file": "2026-10-04_edge_result.md",
+   "target": "inputs/batch/nightly-batch.md",
+   "doc_type": "batch",
+   "reviewed_at": "2026-10-04",
+   "no": 1,
+   "check_id": "BAT-001",
+   "severity": "MUST",
+   "role": "ops",
+   "location": "2. 入力 D:\\in\\\\",
+   "finding": "入力フォルダの末尾の区切りの扱いが無い",
+   "basis": "2. 入力「D:\\in\\」",
+   "invalid_check": "該当しない",
+   "key": "2026-10-04_edge_result.md#1",
+   "fingerprint": "fp:b578410aff1f85fb"
+  },
+  {
+   "file": "2026-10-04_edge_result.md",
+   "target": "inputs/batch/nightly-batch.md",
+   "doc_type": "batch",
+   "reviewed_at": "2026-10-04",
+   "no": 2,
+   "check_id": "BAT-002",
+   "severity": "WANT",
+   "role": "ops",
+   "location": "3. 出力",
+   "finding": "出力ファイルの文字コードが決まっていない",
+   "basis": "3. 出力",
+   "invalid_check": "確認\\\\",
+   "key": "2026-10-04_edge_result.md#2",
+   "fingerprint": "fp:f7d4c9e01f74a225"
+  },
+  {
+   "file": "2026-10-04_edge_result.md",
+   "target": "inputs/batch/nightly-batch.md",
+   "doc_type": "batch",
+   "reviewed_at": "2026-10-04",
+   "no": 5,
+   "check_id": "NEW",
+   "severity": "NITS",
+   "role": "ops",
+   "location": "4. 再実行",
+   "finding": "再実行時の `a|b` の扱い",
+   "basis": "4. 再実行",
+   "invalid_check": "既存の観点に無い",
+   "key": "2026-10-04_edge_result.md#5",
+   "fingerprint": "fp:6afedb1e4ca5dd26"
   }
  ],
  "decisions": {
-  "2026-10-03_stock-db_result.md#1": "adopted",
-  "2026-10-02_order-api_result.md#4": "rejected",
   "2026-10-02_order-api_result.md#1": "adopted",
+  "2026-10-02_order-api_result.md#4": "rejected",
   "2026-10-02_order-api_result.md#5": "adopted",
-  "2026-10-03_stock-db_result.md#2": "rejected"
+  "2026-10-03_stock-db_result.md#1": "adopted",
+  "2026-10-03_stock-db_result.md#2": "rejected",
+  "2026-10-04_edge_result.md#1": "adopted",
+  "2026-10-04_edge_result.md#2": "rejected",
+  "2026-10-04_edge_result.md#5": "adopted"
  },
- "orphans": []
+ "orphans": [],
+ "warnings": [
+  "警告: history.jsonl:7 を飛ばしました（JSON として読めません: Unterminated string starting at）",
+  "警告: history.jsonl:8 を飛ばしました（decision（adopted / rejected）と check_id が必要です）",
+  "警告: history.jsonl:9 を飛ばしました（decision（adopted / rejected）と check_id が必要です）"
+ ]
 }

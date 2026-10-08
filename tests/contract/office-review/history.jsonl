@@ -1,6 +1,12 @@
-{"key": "2026-10-02_order-api_result.md#1", "decision": "adopted", "check_id": "ALL-003", "severity": "MUST", "role": "spec_manager", "doc_type": "api", "finding": "「適宜ページングする」では 1 ページの件数と並び順の安定性が決まらない", "triaged_at": "2026-10-02"}
+﻿{"key": "2026-10-02_order-api_result.md#1", "decision": "adopted", "check_id": "ALL-003", "severity": "MUST", "role": "spec_manager", "doc_type": "api", "finding": "「適宜ページングする」では 1 ページの件数と並び順の安定性が決まらない", "triaged_at": "2026-10-02"}
 {"key": "2026-10-02_order-api_result.md#4", "decision": "rejected", "check_id": "API-007", "severity": "WANT", "role": "dba", "doc_type": "api", "finding": "参照テーブルと検索条件・使うインデックスが書かれていない", "triaged_at": "2026-10-02"}
 {"key": "2026-10-02_order-api_result.md#5", "decision": "adopted", "check_id": "NEW", "severity": "WANT", "role": "ops", "doc_type": "api", "finding": "from の日付はどのタイムゾーンで判定するか（日付の境界）", "triaged_at": "2026-10-02"}
 {"key": "2026-10-03_stock-db_result.md#1", "fingerprint": "fp:0863945210a910f9", "decision": "rejected", "check_id": "DB-001", "severity": "MUST", "role": "dba", "doc_type": "db", "location": "2. テーブル定義", "finding": "区分の値 `A|B|C` 以外が入ったときの扱いが無い", "triaged_at": "2026-10-03"}
 {"key": "2026-10-03_stock-db_result.md#2", "fingerprint": "fp:a0384455353a337f", "decision": "rejected", "check_id": "DB-002", "severity": "NITS", "role": "dba", "doc_type": "db", "location": "3. 配置", "finding": "出力先 C:\\work\\stock の区切り文字が他の設計書と違う", "triaged_at": "2026-10-03"}
 {"key": "2026-10-03_stock-db_result.md#1", "fingerprint": "fp:0863945210a910f9", "decision": "adopted", "check_id": "DB-001", "severity": "MUST", "role": "dba", "doc_type": "db", "location": "2. テーブル定義", "finding": "区分の値 `A|B|C` 以外が入ったときの扱いが無い", "triaged_at": "2026-10-04"}
+{ "key": "壊れた行
+["not", "object"]
+{"key": "2026-10-04_edge_result.md#1", "decision": "maybe", "check_id": "BAT-001"}
+{"key": "2026-10-04_edge_result.md#5", "fingerprint": "fp:6afedb1e4ca5dd26", "decision": "adopted", "check_id": "NEW", "severity": "NITS", "role": "ops", "doc_type": "batch", "location": "4. 再実行", "finding": "再実行時の `a|b` の扱い", "triaged_at": "2026-10-04"}
+{"key": "2026-10-04_edge_result.md#1", "fingerprint": "fp:b578410aff1f85fb", "decision": "adopted", "check_id": "BAT-001", "severity": "MUST", "role": "ops", "doc_type": "batch", "location": "2. 入力 D:\\in\\\\", "finding": "入力フォルダの末尾の区切りの扱いが無い", "triaged_at": "2026-10-04"}
+{"key": "2026-10-04_edge_result.md#2", "fingerprint": "fp:f7d4c9e01f74a225", "decision": "rejected", "check_id": "BAT-002", "severity": "WANT", "role": "ops", "doc_type": "batch", "location": "3. 出力", "finding": "出力ファイルの文字コードが決まっていない", "triaged_at": "2026-10-04"}

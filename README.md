@@ -163,17 +163,22 @@ Noto Sans CJK JP などの日本語フォントを入れてください（Linux:
 ### office-review との形式の約束（テストで確かめています）
 
 office-review が書くレビュー結果（`reviews/*_result.md` の表: No / check_id / 重要度 / ロール / 箇所 / 指摘 / 根拠 /
-無効となるケースの確認）と判定（`data/history.jsonl`）の形式は、このリポジトリの
-**コントラクトテスト**（`tests/test_office_review_contract.py`）で確かめています。
+無効となるケースの確認）と判定（`data/history.jsonl`）は、devtools-common の共通部品 `devtools_common.review_results`
+（office-review と同じ部品）で読みます。形式は **コントラクトテスト**（`tests/test_office_review_contract.py`）で確かめています。
 
+- レビュー結果は UTF-8（BOM 付きでもよい）。表の中の `\|` はセルの中の `|`、`\\|` は「文字の `\`」の後ろの区切りです
+- 列数が違う行・No が数字でない行、判定の壊れた行（JSON でない・`decision`（adopted / rejected）や `check_id` が無い）は、
+  「警告: <ファイル名>:<行番号> を飛ばしました（理由）」を標準エラーに出して飛ばします（ほかの行は取り込みます）
 - `tests/contract/office-review/` に、office-review が書く形式そのもののファイルを置いています（office-review のサンプルを写したもの、
-  テンプレートから作った境界の例（表の中の `\|` など）、office-review の判定を書く処理で書いた行）
-- `expected.json` は、同じファイルを office-review 自身の読み込み処理で読んだ結果です。取り込み（`sources/office_review.py`）が
+  テンプレートから作った境界の例（表の中の `\|`、BOM、末尾が `\\|` のセル、壊れた行）、office-review の判定を書く処理で書いた行）
+- `expected.json` は、同じファイルを office-review 自身の読み込み処理で読んだ結果（警告を含む）です。取り込みが
   表のすべての列と判定を同じように読めることを確かめます
 - 判定は office-review と同じく、指摘の指紋（対象・箇所・指摘の本文）で結び付けます。旧形式（指紋なし）の行は、
   その No にいまある指摘が同じときだけ使います
+- 取り込み直すと、前回取り込んだ office-review の指摘のうち今回のレビュー結果に無いもの（消したファイル・行）は削除します
+  （指摘表の取り込み直しと同じ扱い。ほかの取り込み元の指摘は消しません）
 - office-review の形式が変わったら、`tests/contract/office-review/` を作り直し（作り方は `expected.json` の `generated_by`）、
-  このテストが通るように取り込みを直します
+  このテストが通ることを確かめます
 
 ## 開発
 
