@@ -2,6 +2,24 @@
 
 ## 未リリース
 
+### 変更（office-review の判定の結び付け: 指紋 v2）
+
+- `qa collect office-review` の判定（history.jsonl）の結び付けを、office-review と同じ **指紋 v2**（対象・箇所・本文・ロール・観点）に
+  しました（devtools-common の `resolve_history_v2`）。これまでは旧指紋（対象・箇所・本文）で引いていたため、同じ箇所・同じ本文で
+  ロールや観点が違う 2 件の指摘に、片方の判定が両方に付いていました。`fingerprint_v2` の無い行（office-review 0.2.0 まで）は
+  旧指紋で結び付け、同じ旧指紋の指摘が複数あればロールと観点が一致するものに結び付けます
+- **指摘表の id と取り込み直しの範囲を、ファイル名ではなく取り込み元ルート（`--root`、既定はカレントフォルダ）からの相対パスに**
+  しました（`table:<相対パス>:<番号>`）。これまでは別のフォルダの同じ名前の表を取り込み直すと、もう片方の表の行を
+  「表から消えた行」として削除していました。以前の id（ファイル名だけ）の行は、取り込み直したときに同じ番号・同じ本文の行を
+  新しい id に置き換えます（分類は引き継ぐ）
+- `qa collect github --since` を `YYYY-MM-DD` で確かめます（誤りは終了コード 2。これまでは文字列の比較のまま進み、
+  `2026/04/01` などで期待と違う PR を取っていました）。`--file` と併用したときも PR の `updated_at` で絞ります（これまでは黙って無視）。
+  `--save-raw` の JSON に PR の `updated_at` を残します
+- `qa analyze`: `deliverables.csv` の成果物名にも指摘と同じ伏せ字をかけてから結合します（これまでは伏せた成果物名と
+  伏せていない名前を結合していたため、伏せる語を含む成果物のページ数が付きませんでした）。`pages` などの列が無い・ページ数が
+  数でない・`--deliverables` のファイルが無いときは、設定の誤り（終了コード 2）として止めます（これまでは KeyError で 3、または黙って無視）
+- devtools-common の固定を `cbe97d5` → `6a263b8`（指紋 v2 の共通部品、history.jsonl の型の誤った行・識別子の無い行を飛ばす）に更新
+
 ### 変更（office-review の取り込み）
 
 `qa collect office-review` の読み込みを、devtools-common の共通部品 `devtools_common.review_results`（office-review と同じ部品）に

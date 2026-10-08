@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -19,11 +20,48 @@ class Analysis:
     insights: list[str] = field(default_factory=list)
 
 
+class DeliverablesError(ValueError):
+    """成果物のページ数のファイル（deliverables.csv）の誤り（設定の誤り）."""
+
+
+def read_deliverables(path: Path, mask_name: Callable[[str], str] | None = None) -> pd.Series:
+    """deliverables.csv（deliverable, pages）→ 成果物名 → ページ数.
+
+    成果物名には指摘と同じ伏せ字（mask_name）をかけてから返す（指摘の成果物名は取り込むときに伏せてあるので、
+    伏せた名前同士で結合する）。deliverable・pages の列が無い、ページ数が数でないときは DeliverablesError。
+    伏せた後に同じ名前になった成果物は、ページ数を合計する。
+    """
+    try:
+        raw = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        raise DeliverablesError(f"{path}: 読めません（{e}）") from None
+    raw.columns = [str(c).strip() for c in raw.columns]
+    missing = [c for c in ("deliverable", "pages") if c not in raw.columns]
+    if missing:
+        raise DeliverablesError(f"{path}: 列がありません: {', '.join(missing)}（見出しは deliverable,pages。例: 基本設計書_会員API,18）")
+    pages = pd.to_numeric(raw["pages"].str.strip(), errors="coerce")
+    bad = raw.loc[pages.isna() | (pages <= 0), "deliverable"]
+    if not bad.empty:
+        raise DeliverablesError(f"{path}: pages が正の数ではない行があります（{', '.join(map(str, bad.head(5)))}）")
+    names = raw["deliverable"].str.strip()
+    if mask_name is not None:
+        names = names.map(mask_name)
+    return pd.Series(pages.to_numpy(), index=names.to_numpy(), name="pages").groupby(level=0).sum()
+
+
 def _pct(n: float, d: float) -> float:
     return round(100.0 * n / d, 1) if d else 0.0
 
 
-def run(df: pd.DataFrame, tax: Taxonomy, deliverables: Path | None = None, *, noise_threshold: float = 30.0) -> Analysis:
+def run(
+    df: pd.DataFrame,
+    tax: Taxonomy,
+    deliverables: Path | None = None,
+    *,
+    noise_threshold: float = 30.0,
+    mask_name: Callable[[str], str] | None = None,
+) -> Analysis:
+    """集計する. deliverables（成果物のページ数）の成果物名には mask_name（指摘と同じ伏せ字）をかけてから結合する."""
     df = df.copy()
     df["group"] = df["type"].map(tax.group_of).fillna("")
     a = Analysis(total=len(df), classified=int((df["type"] != "").sum()))
@@ -62,7 +100,7 @@ def run(df: pd.DataFrame, tax: Taxonomy, deliverables: Path | None = None, *, no
         件数=("id", "count"), MUST=("severity", lambda s: int((s == "MUST").sum())), A=("group", lambda s: int((s == "A").sum()))
     )
     if deliverables and deliverables.is_file():
-        pages = pd.read_csv(deliverables, dtype={"deliverable": str}, encoding="utf-8-sig").set_index("deliverable")["pages"]
+        pages = read_deliverables(deliverables, mask_name)
         dg = dg.join(pages, how="left")
         dg["件/ページ"] = (dg["件数"] / dg["pages"]).round(2)
         dg["A/ページ"] = (dg["A"] / dg["pages"]).round(2)

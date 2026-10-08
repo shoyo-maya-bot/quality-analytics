@@ -1,6 +1,9 @@
 """指摘表（Excel / CSV / TSV）を、設定（config/sources/table.yaml）の列の対応で取り込む.
 
-id は `<source>:<ファイル名>:<番号の列の値>`。番号が空の行（と番号の列が無い表）は、行の位置ではなく内容
+id は `<source>:<取り込み元ルートからの相対パス（拡張子なし）>:<番号の列の値>`（例: `table:指摘一覧:1`、
+`table:2026上期/指摘一覧:1`）。ルート（CLI の --root。既定はカレントフォルダ。関数で root を省くとファイルのフォルダ）の
+直下のファイルは、ファイル名だけの id（以前と同じ）になる。
+別のフォルダの同じ名前のファイルは別の id・別の範囲になるので、片方を取り込み直しても、もう片方の行は消えない。番号が空の行（と番号の列が無い表）は、行の位置ではなく内容
 （成果物・指摘者・指摘日・本文）のハッシュで `h` + 10 桁の id を付ける。行を削除・挿入して取り込み直しても id は変わらない。
 同じ内容の行が複数あるときは、2 件目から `-2`、`-3` を付ける。
 """
@@ -8,6 +11,7 @@ id は `<source>:<ファイル名>:<番号の列の値>`。番号が空の行（
 from __future__ import annotations
 
 import hashlib
+import os
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +20,7 @@ import pandas as pd
 from ..model import normalize, split_tag
 
 
-def read(path: Path, conf: dict[str, Any]) -> pd.DataFrame:
+def read(path: Path, conf: dict[str, Any], root: Path | None = None) -> pd.DataFrame:
     header = int(conf.get("header_row", 1)) - 1
     suffix = path.suffix.lower()
     if suffix in (".xlsx", ".xlsm"):
@@ -40,7 +44,7 @@ def read(path: Path, conf: dict[str, Any]) -> pd.DataFrame:
     if "id" not in df.columns:
         df["id"] = ""
     df["id"] = _fill_ids(df)
-    df["id"] = scope(path, conf) + df["id"]
+    df["id"] = scope(path, conf, root) + df["id"]
     for col, key in (("severity", "severity_map"), ("decision", "decision_map"), ("phase", "phase_map")):
         if col in df.columns:
             df[col] = df[col].str.strip().replace(conf.get(key) or {})
@@ -55,10 +59,35 @@ def read(path: Path, conf: dict[str, Any]) -> pd.DataFrame:
     return normalize(df)
 
 
-def scope(path: Path, conf: dict[str, Any]) -> str:
-    """このファイルから取り込んだ指摘の id の先頭. 取り込み直したとき、ここで始まる古い行を削除の対象にする."""
+def scope(path: Path, conf: dict[str, Any], root: Path | None = None) -> str:
+    """このファイルから取り込んだ指摘の id の先頭. 取り込み直したとき、ここで始まる古い行を削除の対象にする.
+
+    ファイル名ではなく、root からの相対パス（拡張子なし、区切りは /）で作る。root を省くとファイルのフォルダ
+    （= ファイル名だけ）。root の直下のファイルは `<source>:<ファイル名>:`（以前の id と同じ）。
+    """
+    prefix = str((conf.get("fixed") or {}).get("source", "table"))
+    return f"{prefix}:{source_key(path, root)}:"
+
+
+def legacy_scope(path: Path, conf: dict[str, Any]) -> str:
+    """以前の版（ファイル名だけで範囲を決めていた版）の id の先頭. 取り込み直したときの移行に使う."""
     prefix = str((conf.get("fixed") or {}).get("source", "table"))
     return f"{prefix}:{path.stem}:"
+
+
+def source_key(path: Path, root: Path | None = None) -> str:
+    """取り込み元ルート（省くとファイルのフォルダ）からの相対パス（拡張子なし、区切りは /）. 例: `2026上期/指摘一覧`、`../共有/指摘一覧`.
+
+    id の区切りの「:」は使わない（Windows で別のドライブにあり相対パスにできないときは、フォルダの絶対パスのハッシュを付ける）。
+    """
+    base = Path(root) if root is not None else Path(path).parent
+    try:
+        rel = Path(os.path.relpath(Path(path).resolve(), base.resolve()))
+    except ValueError:  # Windows: ルートと別のドライブ
+        parent = Path(path).resolve().parent.as_posix()
+        return f"{Path(path).stem}~{hashlib.sha256(parent.encode('utf-8')).hexdigest()[:8]}"
+    key = rel.with_suffix("").as_posix() if rel.suffix else rel.as_posix()
+    return key.replace(":", "_")
 
 
 _HASH_COLS = ("deliverable", "reviewer", "created_at", "text")

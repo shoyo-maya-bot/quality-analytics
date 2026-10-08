@@ -52,7 +52,7 @@ def _config_with_words(tmp_path: Path, words: list[str]) -> Path:
 
 def collect(tmp_path: Path, *files: Path, words: list[str] | None = None) -> tuple[int, str]:
     conf = _config_with_words(tmp_path, words or [])
-    return run(tmp_path, "collect", "table", *map(str, files), config_dir=conf)
+    return run(tmp_path, "collect", "table", "--root", str(tmp_path / "in"), *map(str, files), config_dir=conf)
 
 
 def _csv(path: Path, rows: list[tuple[str, str]]) -> Path:
@@ -433,3 +433,145 @@ def test_office_review_reimport_removes_deleted_review_results(tmp_path: Path):
     assert not after["id"].str.contains("2026-10-03_stock-db_result.md").any()
     assert "表の指摘" in set(after["text"])  # ほかの取り込み元は消さない
     assert len(after) == len(before) - 3
+
+
+# --- 指摘表: 別のフォルダの同じ名前の表 ------------------------------------------------------------
+
+
+def test_same_file_name_in_other_folders_keeps_both_tables(tmp_path: Path):
+    """取り込み元の範囲はファイル名ではなく相対パス. 片方を取り込み直しても、別のフォルダの同名の表の行は消えない."""
+    a = _csv(tmp_path / "in/2026上期/指摘一覧.csv", [("1", "上期の指摘"), ("2", "上期の二つ目")])
+    b = _csv(tmp_path / "in/2026下期/指摘一覧.csv", [("1", "下期の指摘")])
+    conf = _config_with_words(tmp_path, [])
+    root = ["--root", str(tmp_path / "in")]
+    assert run(tmp_path, "collect", "table", *root, str(a), str(b), config_dir=conf)[0] == 0  # 同じ番号でも id は別
+    df = model.load(tmp_path / "data/findings.csv").set_index("text")
+    assert df.loc["上期の指摘", "id"] == "table:2026上期/指摘一覧:1"
+    assert df.loc["下期の指摘", "id"] == "table:2026下期/指摘一覧:1"
+    rc, out = run(tmp_path, "collect", "table", *root, str(b), config_dir=conf)  # 下期だけ取り込み直す
+    assert rc == 0 and "削除 0 件" in out, out
+    assert set(model.load(tmp_path / "data/findings.csv")["text"]) == {"上期の指摘", "上期の二つ目", "下期の指摘"}
+
+
+def test_file_directly_under_root_keeps_previous_id(tmp_path: Path):
+    p = _csv(tmp_path / "in/list.csv", [("1", "一つ目")])
+    df = table.read(p, {"columns": {"id": "No", "text": "指摘内容"}}, root=tmp_path / "in")
+    assert list(df["id"]) == ["table:list:1"]
+    assert table.source_key(p, tmp_path) == "in/list"
+    assert table.source_key(p) == "list"  # root を省くとファイルのフォルダ（ファイル名だけ）
+
+
+def test_previous_file_name_ids_are_moved_to_path_ids_with_labels(tmp_path: Path):
+    """以前の版（ファイル名だけの id）で貯めた行は、取り込み直すとパスの id に付け替え、分類を引き継ぐ（二重に数えない）."""
+    p = _csv(tmp_path / "in/2026上期/指摘一覧.csv", [("1", "上期の指摘")])
+    old = model.normalize(
+        pd.DataFrame(
+            [{"id": "table:指摘一覧:1", "source": "table", "phase": "BD", "text": "上期の指摘", "type": "A1", "classified_by": "human"}]
+        )
+    )
+    model.save(old, tmp_path / "data/findings.csv")
+    conf = _config_with_words(tmp_path, [])
+    rc, out = run(tmp_path, "collect", "table", "--root", str(tmp_path / "in"), str(p), config_dir=conf)
+    assert rc == 0 and "1 件を、取り込み元のパスを含む id に置き換えました" in out, out
+    df = model.load(tmp_path / "data/findings.csv")
+    assert list(df["id"]) == ["table:2026上期/指摘一覧:1"]
+    assert (df.iloc[0]["type"], df.iloc[0]["classified_by"]) == ("A1", "human")
+
+
+# --- GitHub: --since の形式と --file での絞り込み ---------------------------------------------------
+
+
+@pytest.mark.parametrize("since", ["2026/04/01", "20260401", "2026-4-1", "2026-13-01", "2026-02-30", "昨日", "2026-04-01T00:00"])
+def test_github_since_must_be_yyyy_mm_dd(tmp_path: Path, since: str):
+    raw = tmp_path / "pulls.json"
+    raw.write_text(json.dumps({"repo": "o/r", "pulls": []}), encoding="utf-8")
+    rc, out = run(tmp_path, "collect", "github", "--file", str(raw), "--since", since)
+    assert rc == 2 and "--since" in out, out
+    assert not (tmp_path / "data/findings.csv").exists()
+
+
+def test_github_since_with_repo_is_checked_before_any_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GH_TOKEN", "dummy")
+    monkeypatch.setattr(github, "download", lambda *a, **k: pytest.fail("API を呼ばない"))
+    rc, out = run(tmp_path, "collect", "github", "--repo", "o/r", "--since", "2026/04/01")
+    assert rc == 2 and "YYYY-MM-DD" in out, out
+
+
+def _pr(number: int, updated: str | None) -> dict:
+    pr = {
+        "number": number,
+        "user": {"login": "a"},
+        "comments": [{"id": number, "body": f"[MUST] 指摘{number}", "created_at": "2026-09-01T00:00:00Z"}],
+    }
+    if updated is not None:
+        pr["updated_at"] = updated
+    return pr
+
+
+def test_github_since_is_applied_to_file(tmp_path: Path):
+    """--file と --since を併用したとき、--since を黙って無視せず、PR の updated_at（設定のタイムゾーンの日付）で絞る."""
+    raw = tmp_path / "pulls.json"
+    pulls = [_pr(1, "2026-09-30T16:00:00Z"), _pr(2, "2026-09-30T14:00:00Z"), _pr(3, None)]  # 日本時間 10/1 01:00・9/30 23:00
+    raw.write_text(json.dumps({"repo": "o/r", "pulls": pulls}), encoding="utf-8")
+    rc, out = run(tmp_path, "collect", "github", "--file", str(raw), "--since", "2026-10-01")
+    assert rc == 0, out
+    assert "PR 1 件を除きました" in out and "絞れない PR が 1 件" in out, out
+    texts = set(model.load(tmp_path / "data/findings.csv")["text"])
+    assert texts == {"指摘1", "指摘3"}  # 2 は除く。updated_at の無い 3 は残して警告
+
+
+def test_github_download_keeps_updated_at_for_saved_raw():
+    def fetch(url: str):
+        if "/pulls?" in url:
+            return [{"number": 1, "updated_at": "2026-10-02T00:00:00Z"}] if url.endswith("page=1") else []
+        return []
+
+    assert github.download("o/r", fetch)["pulls"][0]["updated_at"] == "2026-10-02T00:00:00Z"
+
+
+# --- 分析: 成果物のページ数（deliverables.csv） -------------------------------------------------------
+
+
+def _one_finding(tmp_path: Path, deliverable: str, words: list[str]) -> Path:
+    conf = _config_with_words(tmp_path, words)
+    model.save(
+        mask.load(conf).frame(
+            model.normalize(pd.DataFrame([{"id": "t:1", "phase": "BD", "deliverable": deliverable, "text": "x", "type": "A1"}]))
+        ),
+        tmp_path / "data/findings.csv",
+    )
+    return conf
+
+
+def test_deliverable_names_are_masked_before_join(tmp_path: Path):
+    """deliverables.csv の成果物名にも指摘と同じ伏せ字をかけてから結合する（伏せた名前とページ数が結び付く）."""
+    conf = _one_finding(tmp_path, "基本設計書_A社会員API", ["A社"])
+    dl = tmp_path / "deliverables.csv"
+    dl.write_text("deliverable,pages\n基本設計書_A社会員API,10\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    rc, out = run(tmp_path, "analyze", "--out", str(out_dir), "--deliverables", str(dl), "--no-charts", config_dir=conf)
+    assert rc == 0, out
+    xl = pd.read_excel(out_dir / "summary.xlsx", sheet_name="成果物別", index_col=0)
+    assert "A社" not in "".join(map(str, xl.index))
+    assert xl.iloc[0]["ページ数"] == 10 and xl.iloc[0]["A/ページ"] == 0.1
+
+
+def test_deliverables_without_pages_column_is_config_error(tmp_path: Path):
+    conf = _one_finding(tmp_path, "D1", [])
+    dl = tmp_path / "deliverables.csv"
+    dl.write_text("deliverable,ページ\nD1,10\n", encoding="utf-8")
+    rc, out = run(tmp_path, "analyze", "--out", str(tmp_path / "out"), "--deliverables", str(dl), "--no-charts", config_dir=conf)
+    assert rc == 2 and "pages" in out and "Traceback" not in out, out
+
+
+def test_deliverables_with_non_numeric_pages_is_config_error(tmp_path: Path):
+    dl = tmp_path / "deliverables.csv"
+    dl.write_text("deliverable,pages\nD1,十\n", encoding="utf-8")
+    with pytest.raises(analyze.DeliverablesError, match="D1"):
+        analyze.read_deliverables(dl)
+
+
+def test_missing_deliverables_file_given_explicitly_is_usage_error(tmp_path: Path):
+    conf = _one_finding(tmp_path, "D1", [])
+    rc, out = run(tmp_path, "analyze", "--out", str(tmp_path / "out"), "--deliverables", str(tmp_path / "nai.csv"), config_dir=conf)
+    assert rc == 2 and "nai.csv" in out, out

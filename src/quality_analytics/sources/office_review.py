@@ -5,8 +5,12 @@
   セルの区切りはエスケープされていない `|`（`\\|` はセルの中の `|`、`\\\\|` は「文字の `\\`」の後ろの区切り）。
   列数が違う行・No が数字でない行は、行番号付きで警告して飛ばす
 - 判定（history.jsonl）: 1 行 1 判定、後の行が有効。壊れた行（JSON でない・decision（adopted / rejected）や
-  check_id が無い）は、行番号付きで警告して飛ばす。判定は指摘の指紋（対象・箇所・指摘の本文のハッシュ）で結び付け、
-  旧形式の行（fingerprint なし）は、その No にいまある指摘が同じとき（本文と check_id が一致）だけ結び付ける
+  check_id が無い・それらや指紋が文字列でない・fingerprint_v2 も fingerprint も key も無い）は、行番号付きで警告して飛ばす
+- 判定は office-review と同じく指紋 v2（fingerprint_v2: 対象・箇所・指摘の本文・ロール・観点（check_id）のハッシュ）で
+  結び付ける（devtools-common の resolve_history_v2）。同じ箇所・同じ本文でもロールや観点が違えば別の指摘として判定を引く。
+  fingerprint_v2 の無い行（office-review 0.2.0 までの行）は、旧指紋（対象・箇所・本文）が同じ指摘に結び付け、
+  同じ旧指紋の指摘が複数あるときは、行のロールと観点が一致するものに結び付ける（決められなければ結び付けない）。
+  もっと古い行（指紋なし）は、その No にいまある指摘が同じとき（本文と check_id が一致）だけ結び付ける
 
 この約束は tests/contract/office-review/ の実物の形式で確かめている（README の「office-review との形式の約束」）。
 """
@@ -25,7 +29,8 @@ from ..model import normalize
 
 DOC_TYPE_PHASE = {"requirements": "RD", "rd": "RD"}  # それ以外の設計書は BD とみなす
 COLUMNS = rr.COLUMNS
-fingerprint = rr.fingerprint
+fingerprint = rr.fingerprint  # 旧指紋（v1）
+fingerprint_v2 = rr.fingerprint_v2  # 判定の結び付けに使う指紋（office-review の history.jsonl の fingerprint_v2）
 SCOPE = "office-review:"  # 取り込んだ指摘の id の先頭（取り込み直したとき、今回に無い行を削除する範囲）
 
 
@@ -49,7 +54,7 @@ def load_items(reviews_dir: Path, warn: Callable[[str], Any] | None = None) -> l
 def read(reviews_dir: Path, history: Path | None = None, warn: Callable[[str], Any] | None = None) -> pd.DataFrame:
     items = load_items(reviews_dir, warn)
     records = rr.load_history(history, warn or _stderr) if history else []
-    decisions = rr.resolve_history(records, items).decisions
+    decisions = rr.resolve_history_v2(records, items).decisions  # 指紋 v2 → 最新の判定（office-review と同じ規則）
     rows = []
     for it in items:
         target = Path(it.target).stem if it.target else Path(it.file).stem
@@ -64,7 +69,7 @@ def read(reviews_dir: Path, history: Path | None = None, warn: Callable[[str], A
                 "severity": it.severity,
                 "text": it.finding,
                 "response": "",
-                "decision": str(decisions.get(it.fingerprint, {}).get("decision", "")),
+                "decision": str((decisions.get(it.fingerprint_v2) or {}).get("decision", "")),
                 "created_at": it.reviewed_at[:10],
             }
         )

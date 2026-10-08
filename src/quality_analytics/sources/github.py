@@ -6,8 +6,9 @@
 取得は REST API（GH_TOKEN）。通信は devtools_common の HttpClient（GET は 429・5xx・接続エラーを再試行、
 Retry-After に従う。1 秒あたりの回数も抑える）。PR は更新の新しい順に 1 ページずつ取り、--since より古い PR が出たら止める。
 日付（created_at・--since との比較）は UTC の時刻を設定のタイムゾーン（既定 Asia/Tokyo）の日付にして使う。
+--since は YYYY-MM-DD（誤りは引数の誤り）。--file でも PR の updated_at で同じように絞る（updated_at の無い PR は絞れないので残し、件数を警告）。
 オフラインで試すときは、同じ形の JSON（--file）を読む:
-    {"repo": "owner/name", "pulls": [{"number": 1, "title": "...", "user": {"login": "..."},
+    {"repo": "owner/name", "pulls": [{"number": 1, "title": "...", "user": {"login": "..."}, "updated_at": "2026-10-04T23:30:00Z",
       "comments": [ ...pulls/{n}/comments の要素... ], "reviews": [ ...pulls/{n}/reviews の要素... ]}]}
 """
 
@@ -62,6 +63,40 @@ def local_date(timestamp: str, tz: str = DEFAULT_TZ) -> str:
     return t.astimezone(ZoneInfo(tz)).date().isoformat()
 
 
+def parse_since(value: str) -> str:
+    """--since の値（YYYY-MM-DD）を確かめて返す. 空はそのまま（絞らない）. 形式・日付が誤りなら ValueError."""
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if len(value) != 10 or value[4] != "-" or value[7] != "-":
+        raise ValueError(f"--since は YYYY-MM-DD で指定してください（例: 2026-04-01）: {value}")
+    try:
+        dt.date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"--since の日付が正しくありません（YYYY-MM-DD）: {value}") from None
+    return value
+
+
+def filter_since(data: dict, since: str, tz: str = DEFAULT_TZ) -> tuple[dict, int, int]:
+    """取得済みの JSON（--file）の PR を、更新日（updated_at を tz の日付にしたもの）が since 以降のものに絞る.
+
+    → (絞った JSON, 除いた PR の件数, updated_at が無く絞れなかった PR の件数（残す）)
+    """
+    if not since:
+        return data, 0, 0
+    kept, dropped, unknown = [], 0, 0
+    for pr in data.get("pulls", []):
+        updated = pr.get("updated_at") or ""
+        if not updated:
+            unknown += 1
+            kept.append(pr)
+        elif local_date(updated, tz) >= since:
+            kept.append(pr)
+        else:
+            dropped += 1
+    return {**data, "pulls": kept}, dropped, unknown
+
+
 def _pages(fetch: Fetch, url: str, limit: int = MAX_PAGES, truncated: list[str] | None = None) -> Iterator[dict]:
     """1 ページずつ取る（呼び出し側が途中で止めれば、残りのページは取らない）.
 
@@ -103,6 +138,7 @@ def download(repo: str, fetch: Fetch, since: str = "", max_pulls: int = 200, tz:
                 "number": n,
                 "title": pr.get("title", ""),
                 "user": pr.get("user") or {},
+                "updated_at": pr.get("updated_at", ""),  # --file で読み直すときも --since で絞れるように
                 "comments": list(_pages(fetch, f"{API}/repos/{owner_repo}/pulls/{n}/comments", truncated=cut)),
                 "reviews": list(_pages(fetch, f"{API}/repos/{owner_repo}/pulls/{n}/reviews", truncated=cut)),
             }
