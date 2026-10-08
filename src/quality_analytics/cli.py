@@ -33,6 +33,17 @@ from .sources import github, office_review, table
 TOOL = "quality-analytics"
 
 
+def _positive_int(v: str) -> int:
+    """1 以上の整数. 0（全件になる）や負の数（末尾を除く）は引数の誤り（終了コード 2）にする."""
+    try:
+        n = int(v)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"整数を指定してください: {v}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"1 以上を指定してください: {v}")
+    return n
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="qa", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -77,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--out", type=Path, default=Path("output/prompts"), help="export: プロンプトの書き出し先")
     k.add_argument("--yes", action="store_true", help="api: 見積もりを確認したうえで送信する")
     k.add_argument("--max-cost", type=float, help="api: 費用の上限（USD）。既定は config/llm.yaml")
-    k.add_argument("--limit", type=int, help="api / export: 先頭の N 件だけ（試行用）")
+    k.add_argument("--limit", type=_positive_int, help="api / export: 先頭の N 件だけ（試行用。1 以上）")
 
     sub.add_parser("check", help="分類が定義（config/taxonomy.yaml）に合っているか")
 
@@ -239,7 +250,7 @@ def cmd_classify(args) -> int:
 
     conf = _yaml(args.config_dir / "llm.yaml")
     target = df if args.overwrite else df[df["type"] == ""]
-    if args.limit:
+    if args.limit is not None:
         target = target.head(args.limit)
     if target.empty:
         print("分類が必要な指摘はありません（分類し直すときは --overwrite）")

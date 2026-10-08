@@ -352,3 +352,12 @@ def test_reviewer_noise_rate_uses_classified_count_like_overall_rate():
 
 def test_analyze_without_data_is_usage_error(tmp_path: Path):
     assert run(tmp_path, "analyze")[0] == 2
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "x"])
+def test_classify_limit_must_be_positive(tmp_path: Path, value: str):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), pytest.raises(SystemExit) as e:
+        main(["--data", str(tmp_path / "f.csv"), "classify", "--mode", "export", "--limit", value])
+    assert e.value.code == 2
+    assert "--limit" in err.getvalue()
