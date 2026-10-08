@@ -321,7 +321,18 @@ def cmd_analyze(args) -> int:
     if df.empty:
         raise common_cli.UsageError(f"指摘がありません（先に collect）: {args.data}")
     deliverables = args.deliverables or args.config_dir / "deliverables.csv"
-    a = analyze.run(df, tax, deliverables if deliverables.is_file() else None, noise_threshold=args.noise_threshold)
+    if args.deliverables and not deliverables.is_file():
+        raise common_cli.UsageError(f"成果物のページ数のファイルが見つかりません: {deliverables}")
+    try:
+        a = analyze.run(
+            df,
+            tax,
+            deliverables if deliverables.is_file() else None,
+            noise_threshold=args.noise_threshold,
+            mask_name=_masker(args).text,  # 指摘の成果物名と同じ伏せ字をかけてから結合する
+        )
+    except analyze.DeliverablesError as e:
+        raise common_cli.UsageError(str(e)) from None
     args.out.mkdir(parents=True, exist_ok=True)
     drawn = {} if args.no_charts else charts.draw_all(a.tables, args.out / "charts")
     (args.out / "report.md").write_text(report.markdown(a, args.title, drawn, args.out), encoding="utf-8", newline="\n")

@@ -527,3 +527,51 @@ def test_github_download_keeps_updated_at_for_saved_raw():
         return []
 
     assert github.download("o/r", fetch)["pulls"][0]["updated_at"] == "2026-10-02T00:00:00Z"
+
+
+# --- 分析: 成果物のページ数（deliverables.csv） -------------------------------------------------------
+
+
+def _one_finding(tmp_path: Path, deliverable: str, words: list[str]) -> Path:
+    conf = _config_with_words(tmp_path, words)
+    model.save(
+        mask.load(conf).frame(
+            model.normalize(pd.DataFrame([{"id": "t:1", "phase": "BD", "deliverable": deliverable, "text": "x", "type": "A1"}]))
+        ),
+        tmp_path / "data/findings.csv",
+    )
+    return conf
+
+
+def test_deliverable_names_are_masked_before_join(tmp_path: Path):
+    """deliverables.csv の成果物名にも指摘と同じ伏せ字をかけてから結合する（伏せた名前とページ数が結び付く）."""
+    conf = _one_finding(tmp_path, "基本設計書_A社会員API", ["A社"])
+    dl = tmp_path / "deliverables.csv"
+    dl.write_text("deliverable,pages\n基本設計書_A社会員API,10\n", encoding="utf-8")
+    out_dir = tmp_path / "out"
+    rc, out = run(tmp_path, "analyze", "--out", str(out_dir), "--deliverables", str(dl), "--no-charts", config_dir=conf)
+    assert rc == 0, out
+    xl = pd.read_excel(out_dir / "summary.xlsx", sheet_name="成果物別", index_col=0)
+    assert "A社" not in "".join(map(str, xl.index))
+    assert xl.iloc[0]["ページ数"] == 10 and xl.iloc[0]["A/ページ"] == 0.1
+
+
+def test_deliverables_without_pages_column_is_config_error(tmp_path: Path):
+    conf = _one_finding(tmp_path, "D1", [])
+    dl = tmp_path / "deliverables.csv"
+    dl.write_text("deliverable,ページ\nD1,10\n", encoding="utf-8")
+    rc, out = run(tmp_path, "analyze", "--out", str(tmp_path / "out"), "--deliverables", str(dl), "--no-charts", config_dir=conf)
+    assert rc == 2 and "pages" in out and "Traceback" not in out, out
+
+
+def test_deliverables_with_non_numeric_pages_is_config_error(tmp_path: Path):
+    dl = tmp_path / "deliverables.csv"
+    dl.write_text("deliverable,pages\nD1,十\n", encoding="utf-8")
+    with pytest.raises(analyze.DeliverablesError, match="D1"):
+        analyze.read_deliverables(dl)
+
+
+def test_missing_deliverables_file_given_explicitly_is_usage_error(tmp_path: Path):
+    conf = _one_finding(tmp_path, "D1", [])
+    rc, out = run(tmp_path, "analyze", "--out", str(tmp_path / "out"), "--deliverables", str(tmp_path / "nai.csv"), config_dir=conf)
+    assert rc == 2 and "nai.csv" in out, out

@@ -15,6 +15,9 @@
 - `qa collect github --since` を `YYYY-MM-DD` で確かめます（誤りは終了コード 2。これまでは文字列の比較のまま進み、
   `2026/04/01` などで期待と違う PR を取っていました）。`--file` と併用したときも PR の `updated_at` で絞ります（これまでは黙って無視）。
   `--save-raw` の JSON に PR の `updated_at` を残します
+- `qa analyze`: `deliverables.csv` の成果物名にも指摘と同じ伏せ字をかけてから結合します（これまでは伏せた成果物名と
+  伏せていない名前を結合していたため、伏せる語を含む成果物のページ数が付きませんでした）。`pages` などの列が無い・ページ数が
+  数でない・`--deliverables` のファイルが無いときは、設定の誤り（終了コード 2）として止めます（これまでは KeyError で 3、または黙って無視）
 - devtools-common の固定を `cbe97d5` → `6a263b8`（指紋 v2 の共通部品、history.jsonl の型の誤った行・識別子の無い行を飛ばす）に更新
 
 ### 変更（office-review の取り込み）
