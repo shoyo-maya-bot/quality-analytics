@@ -12,6 +12,7 @@
 
 取り込んだ指摘と分類の結果は data/findings.csv（既定）に貯まります。
 終了コード: 0 正常 / 1 定義に合わない分類あり（check）/ 2 引数・設定・入力の誤り / 3 実行時エラー
+（classify --mode api が実際の費用の上限で途中で止まったときも 3）
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from devtools_common import cli as common_cli
 from devtools_common.config import load_dotenv, load_structured, require_env
@@ -53,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--only-tagged", action="store_true", help="[MUST] などのタグがあるコメントだけ")
     g.add_argument("--anonymize", action="store_true", help="ユーザー名を U-xxxxxx に置き換える")
     g.add_argument("--save-raw", type=Path, help="取得した JSON を保存する（再取得せずに試せる）")
+    g.add_argument(
+        "--timezone",
+        default=os.environ.get("QA_TIMEZONE") or github.DEFAULT_TZ,
+        help="日付にするタイムゾーン（既定: 環境変数 QA_TIMEZONE、無ければ Asia/Tokyo）",
+    )
     o = c.add_parser("office-review", help="office-review のレビュー結果と判定")
     o.add_argument("--reviews", type=Path, required=True)
     o.add_argument("--history", type=Path)
@@ -108,18 +115,27 @@ def _load(args):
     return model.normalize(_masker(args).frame(model.load(args.data)))
 
 
-def _store(args, new) -> int:
+def _store(args, new, scopes: list[str] | None = None) -> int:
+    """取り込んだ指摘を伏せ字にして保存する. scopes（id の先頭）で始まり、今回に無い既存の行は削除する."""
     m = _masker(args)
-    merged, added, updated = model.merge(m.frame(model.load(args.data)), m.frame(model.normalize(new)))
+    new = model.normalize(new)
+    names = m.names(v for c in m.pseudonymize if c in new.columns for v in new[c].astype(str))
+    masked_scopes = [m.ident(s.rstrip(":"), names) + ":" for s in scopes or []]
+    try:
+        merged, added, updated, deleted = model.merge(m.frame(model.load(args.data)), m.frame(new), masked_scopes)
+    except model.DuplicateIdError as e:
+        raise common_cli.UsageError(str(e)) from None
     model.save(merged, args.data)
-    print(f"{args.data}: 追加 {added} 件 / 更新 {updated} 件（合計 {len(merged)} 件）")
+    print(f"{args.data}: 追加 {added} 件 / 更新 {updated} 件 / 削除 {deleted} 件（合計 {len(merged)} 件）")
+    if deleted:
+        print("削除: 取り込み元の表から無くなった行です（分類の結果も消えます）")
     return common_cli.ExitCode.OK
 
 
 def cmd_collect(args) -> int:
     if args.source == "table":
         conf = _yaml(args.mapping or args.config_dir / "sources/table.yaml")
-        frames = []
+        frames, scopes = [], []
         for f in args.files:
             if not f.is_file():
                 raise common_cli.UsageError(f"見つかりません: {f}")
@@ -127,21 +143,28 @@ def cmd_collect(args) -> int:
                 frames.append(table.read(f, conf))
             except ValueError as e:
                 raise common_cli.UsageError(str(e)) from None
+            scopes.append(table.scope(f, conf))
         import pandas as pd
 
-        return _store(args, pd.concat(frames, ignore_index=True))
+        return _store(args, pd.concat(frames, ignore_index=True), scopes)
     if args.source == "github":
+        try:
+            ZoneInfo(args.timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise common_cli.UsageError(f"タイムゾーンが分かりません: {args.timezone}（例: Asia/Tokyo、UTC）") from None
         if args.file:
             data = load_structured(args.file)
         else:
             load_dotenv()
-            data = github.download(args.repo, github.http_fetch(require_env("GH_TOKEN")), since=args.since)
+            data = github.download(args.repo, github.http_fetch(require_env("GH_TOKEN")), since=args.since, tz=args.timezone)
             if args.save_raw:
                 import json
 
                 args.save_raw.parent.mkdir(parents=True, exist_ok=True)
                 args.save_raw.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        return _store(args, github.to_findings(data, phase=args.phase, only_tagged=args.only_tagged, anonymize=args.anonymize))
+        return _store(
+            args, github.to_findings(data, phase=args.phase, only_tagged=args.only_tagged, anonymize=args.anonymize, tz=args.timezone)
+        )
     if not args.reviews.is_dir():
         raise common_cli.UsageError(f"フォルダが見つかりません: {args.reviews}")
     return _store(args, office_review.read(args.reviews, args.history))
@@ -191,16 +214,17 @@ def cmd_classify(args) -> int:
             f"{conf['model']} の料金が devtools_common.llm.PRICES にありません（モデル名を確かめるか、devtools-common を更新してください）"
         )
     limit = args.max_cost if args.max_cost is not None else float(conf.get("max_cost_usd", 5.0))
-    if est.cost(price) > limit:
+    if est.cost_with_margin(price, conf) > limit:
         raise common_cli.UsageError(
-            f"見積もり ${est.cost(price):.3f} が上限 ${limit:.2f} を超えています（--limit で件数を絞るか --max-cost）"
+            f"見積もり ${est.cost_with_margin(price, conf):.3f}（再試行の余裕込み）が上限 ${limit:.2f} を超えています"
+            "（--limit で件数を絞るか --max-cost）"
         )
     if not args.yes:
         print("\n送信していません。内容と費用を確認して、--yes を付けて実行してください。")
         return common_cli.ExitCode.OK
     load_dotenv()
     client = llm.make_client(conf)
-    out, res = _run_subset(df, target, tax, conf, client, args)
+    out, res = _run_subset(df, target, tax, conf, client, args, limit, price)
     model.save(out, args.data)
     print(
         f"分類 {res.classified} 件 / キャッシュ利用 {res.cached} 件 / 呼び出し {res.calls} 回 / 実際の費用 約 ${res.cost(price):.3f}"
@@ -209,11 +233,19 @@ def cmd_classify(args) -> int:
     )
     for pr in res.problems:
         print(f"NG {pr}")
+    if res.stopped:
+        print(
+            f"注意: 実際の費用が費用の上限 ${limit:.2f} に近づいたため、残り {res.skipped} 件の分類を止めました"
+            "（分類できた分は保存しました。続けるときは --max-cost を見直して、もう一度実行してください）",
+            file=sys.stderr,
+        )
+        return common_cli.ExitCode.RUNTIME
     return common_cli.ExitCode.FINDINGS if res.problems else common_cli.ExitCode.OK
 
 
-def _run_subset(df, target, tax, conf, client, args):
-    sub, res = llm.run(target, tax, conf, client, args.data.parent / "llm-cache.jsonl", _prompt_dir(args))
+def _run_subset(df, target, tax, conf, client, args, max_cost=None, price=None):
+    cache = args.data.parent / "llm-cache.jsonl"
+    sub, res = llm.run(target, tax, conf, client, cache, _prompt_dir(args), max_cost=max_cost, price=price)
     out = df.set_index("id")
     out.update(sub.set_index("id"))
     return out.reset_index()[model.COLUMNS], res

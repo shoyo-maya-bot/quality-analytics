@@ -1,15 +1,19 @@
 """指摘の共通形式と、その保存（CSV）.
 
 どの取り込み元も、この列にそろえて data/findings.csv に書く。分類の結果も同じファイルの列に入る。
-CSV は Excel で開けるように UTF-8（BOM 付き）で書く。
+CSV は Excel で開けるように UTF-8（BOM 付き）で書く。数式の始まりの文字（= + - @ など）で始まる値は、
+Excel で数式として動かないように先頭に ' を付けて書き、読むときに外す（safe.py）。
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 import pandas as pd
+
+from . import safe
 
 COLUMNS = [
     "id",  # 取り込み元の中で一意（例: table:12, github:owner/repo#3/c123, office-review:file.md#2）
@@ -64,23 +68,54 @@ def split_tag(text: str) -> tuple[str, str]:
 def load(path: Path) -> pd.DataFrame:
     if not path.is_file():
         return empty()
-    return normalize(pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig"))
+    df = pd.read_csv(path, dtype=str, keep_default_na=False, encoding="utf-8-sig")
+    return normalize(df.map(safe.unquote))
 
 
 def save(df: pd.DataFrame, path: Path) -> None:
+    """一時ファイルに書いてから置き換える（途中で落ちても元のファイルは壊れない）."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    normalize(df).to_csv(path, index=False, encoding="utf-8-sig", lineterminator="\n")
+    out = normalize(df).astype(object).map(safe.quote)
+    tmp = path.with_name(path.name + ".tmp")
+    out.to_csv(tmp, index=False, encoding="utf-8-sig", lineterminator="\n")
+    tmp.replace(path)
 
 
-def merge(existing: pd.DataFrame, new: pd.DataFrame) -> tuple[pd.DataFrame, int, int]:
-    """id で追加・更新する. 分類の結果は、本文が変わっていなければ残す. → (結果, 追加件数, 更新件数)."""
-    existing, new = normalize(existing), normalize(new)
+class DuplicateIdError(ValueError):
+    """取り込んだ指摘に、中身の違う同じ id がある（片方を黙って捨てないように止める）."""
+
+
+def _check_duplicates(new: pd.DataFrame) -> pd.DataFrame:
+    """中身まで同じ行は 1 件にまとめる. 中身の違う同じ id があれば DuplicateIdError."""
+    new = new.drop_duplicates()
+    dup = new[new["id"].duplicated(keep=False)]
+    if not dup.empty:
+        ids = ", ".join(sorted(set(dup["id"]))[:5])
+        raise DuplicateIdError(
+            f"id が重複しています（{len(set(dup['id']))} 件. 例: {ids}）。"
+            "指摘表の番号の列・ファイル名（同じ名前のファイルを別のフォルダから取り込んでいないか）を確かめてください"
+        )
+    return new
+
+
+def merge(existing: pd.DataFrame, new: pd.DataFrame, replace_scopes: Iterable[str] = ()) -> tuple[pd.DataFrame, int, int, int]:
+    """id で追加・更新する. 分類の結果は、本文が変わっていなければ残す. → (結果, 追加件数, 更新件数, 削除件数).
+
+    replace_scopes: 取り込み元の id の先頭（例: "table:指摘一覧:"）. 既存の指摘のうち、この先頭で始まり new に無いものは、
+    取り込み元から消えた行として削除する（同じ表を取り込み直したとき、古い行が残って二重に数えないように）。
+    """
+    existing, new = normalize(existing), _check_duplicates(normalize(new))
+    scopes = tuple(s for s in replace_scopes if s)
+    new_ids = set(new["id"])
+    gone = existing["id"].str.startswith(scopes) & ~existing["id"].isin(new_ids) if scopes else pd.Series(False, index=existing.index)
+    deleted = int(gone.sum())
+    existing = existing[~gone]
     if existing.empty:
-        return new.drop_duplicates("id", keep="last").reset_index(drop=True), len(new.drop_duplicates("id")), 0
-    old = existing.set_index("id")
+        return new.reset_index(drop=True), len(new), 0, deleted
+    old = existing.drop_duplicates("id", keep="last").set_index("id")
     added = updated = 0
     rows = []
-    for _, r in new.drop_duplicates("id", keep="last").iterrows():
+    for _, r in new.iterrows():
         if r["id"] in old.index:
             prev = old.loc[r["id"]]
             if prev["text"] == r["text"]:
@@ -92,6 +127,5 @@ def merge(existing: pd.DataFrame, new: pd.DataFrame) -> tuple[pd.DataFrame, int,
         else:
             added += 1
         rows.append(r)
-    new_ids = {r["id"] for r in rows}
     keep = existing[~existing["id"].isin(new_ids)]
-    return normalize(pd.concat([keep, pd.DataFrame(rows)], ignore_index=True)), added, updated
+    return normalize(pd.concat([keep, pd.DataFrame(rows)], ignore_index=True)), added, updated, deleted

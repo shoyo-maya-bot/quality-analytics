@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from . import safe
 from .analyze import Analysis
 
 
@@ -77,9 +78,11 @@ def dashboard(a: Analysis, title: str, findings: pd.DataFrame, charts: dict[str,
 
 
 def excel(a: Analysis, findings: pd.DataFrame, path: Path) -> None:
+    """summary.xlsx. 指摘の本文や LLM の reason が = で始まっても数式にしない（文字列型のセルにする）."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(path, engine="openpyxl") as xw:
         pd.DataFrame({"所見": a.insights or ["（なし）"]}).to_excel(xw, sheet_name="所見", index=False)
         for name, df in a.tables.items():
             df.to_excel(xw, sheet_name=name[:31].replace("×", "x"))
         findings.to_excel(xw, sheet_name="指摘", index=False)
+        safe.excel_strings(xw.book)

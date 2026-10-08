@@ -2,7 +2,9 @@
 
 通信・再試行・構造化出力・費用の計算は devtools_common.llm（LLMClient）に任せる。
 
-- 実行前に必ず費用を見積もり、上限（max_cost_usd）を超えるなら実行しない
+- 実行前に必ず費用を見積もり、上限（max_cost_usd）を超えるなら実行しない. 見積もりには再試行の分の余裕
+  （retry_margin. 既定 30%）を含める
+- 実行中も実際にかかった費用（API が返す usage）を積算し、次の呼び出しで上限を超えそうなら残りの分類を止める
 - 接続先は環境変数 ANTHROPIC_BASE_URL（未設定なら https://api.anthropic.com）。API キーは ANTHROPIC_API_KEY
   （ゲートウェイ向けに ANTHROPIC_AUTH_TOKEN も使える）
 - 何度も送る長い「分類の定義」（prompts/classify.md と config/taxonomy.yaml・工程の目安）はシステムプロンプトにして
@@ -39,6 +41,7 @@ OUTPUT_TOKENS_PER_ITEM = 80  # {"id","type","topic","root_cause","reason"} 1 件
 TOOL_OVERHEAD_TOKENS = 400  # ツールを使わせるときに API が足すシステムプロンプトとスキーマの目安（1 回ごと）
 TOOL_NAME = "record_labels"
 SCHEMA_VERSION = 1  # 回答のスキーマを変えたら上げる（結果のキャッシュのキーに入る）
+DEFAULT_RETRY_MARGIN = 0.3  # 見積もりに足す再試行（スキーマ不一致の再送・通信の再試行）の余裕（割合）
 COMPARE_MODELS = ["claude-haiku-4-5", "claude-sonnet-5-5", "claude-opus-5-5"]  # 見積もりの表に並べるモデル
 
 
@@ -85,6 +88,15 @@ class Estimate:
         """安全側の見積もり（USD）. 2 回目以降の定義もキャッシュが効かない前提で、通常の入力単価で数える."""
         return (self.input_tokens * p.input + self.output_tokens * p.output + self.cache_write_tokens * p.cache_write) / 1_000_000
 
+    def cost_with_margin(self, p: Price, conf: dict[str, Any]) -> float:
+        """再試行の分の余裕（config/llm.yaml の retry_margin. 既定 30%）を足した見積もり. 上限と比べるのはこの値."""
+        return self.cost(p) * (1 + retry_margin(conf))
+
+
+def retry_margin(conf: dict[str, Any]) -> float:
+    v = conf.get("retry_margin")
+    return DEFAULT_RETRY_MARGIN if v is None else max(0.0, float(v))
+
 
 def batches(df: pd.DataFrame, size: int) -> list[tuple[str, pd.DataFrame]]:
     out = []
@@ -122,9 +134,11 @@ def cost_table(est: Estimate, conf: dict[str, Any]) -> str:
     for model in models:
         p = price(model, conf) if model == conf["model"] else price_for(model)
         mark = "（設定中）" if model == conf["model"] else ""
-        lines.append(f"| {model}{mark} | {'料金表にありません' if p is None else f'${est.cost(p):.3f}'} |")
+        lines.append(f"| {model}{mark} | {'料金表にありません' if p is None else f'${est.cost_with_margin(p, conf):.3f}'} |")
     lines += [
         "",
+        f"見積もりには再試行の分の余裕（{retry_margin(conf):.0%}. config/llm.yaml の retry_margin）を含みます。"
+        "実行中も実際の費用を数え、上限を超えそうなら残りを止めます。",
         "価格は devtools_common.llm.PRICES（確認日をコメントに記載）。使う前に公式の料金表で確かめてください。",
         "定義はプロンプトキャッシュを使うので、2 回目以降の呼び出しは実際にはこれより安くなります。",
     ]
@@ -207,6 +221,8 @@ class RunResult:
     cache_creation_input_tokens: int = 0
     cache_read_input_tokens: int = 0
     calls: int = 0
+    stopped: bool = False  # 費用の上限で途中で止めた
+    skipped: int = 0  # 止めたために分類しなかった件数
 
     def cost(self, p: Price) -> float:
         return (
@@ -232,9 +248,26 @@ def _prompt_hashes(df: pd.DataFrame, tax: Taxonomy, conf: dict[str, Any], prompt
     }
 
 
+def _would_exceed(res: RunResult, max_cost: float | None, p: Price | None) -> bool:
+    """次の呼び出しで上限を超えそうか. 1 回あたりの実際の費用の平均を、次の 1 回の費用とみなす."""
+    if max_cost is None or p is None or res.calls == 0:
+        return False  # 最初の 1 回は、実行前の見積もり（余裕込み）で上限と比べてある
+    spent = res.cost(p)
+    return spent + spent / res.calls > max_cost
+
+
 def run(
-    df: pd.DataFrame, tax: Taxonomy, conf: dict[str, Any], client: LLMClient, cache_path: Path, prompt_dir: Path | None = None
+    df: pd.DataFrame,
+    tax: Taxonomy,
+    conf: dict[str, Any],
+    client: LLMClient,
+    cache_path: Path,
+    prompt_dir: Path | None = None,
+    *,
+    max_cost: float | None = None,
+    price: Price | None = None,
 ) -> tuple[pd.DataFrame, RunResult]:
+    """分類する. max_cost と price を渡すと、実際の費用で上限を超えそうになったら残りを止める（res.stopped）."""
     model = conf["model"]
     cache = _load_cache(cache_path)
     hashes = _prompt_hashes(df, tax, conf, prompt_dir)
@@ -254,11 +287,19 @@ def run(
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     with cache_path.open("a", encoding="utf-8") as fh:
         for phase, g in batches(todo, int(conf.get("batch_size", 20))):
+            if res.stopped or _would_exceed(res, max_cost, price):
+                res.stopped = True
+                res.skipped += len(g)
+                continue
             system, user = prompt.build_parts(phase, g, tax, redact_patterns=conf.get("redact"), prompt_dir=prompt_dir)
             user += f"\n\n結果は {TOOL_NAME} ツールの labels に、上のすべての指摘について 1 件ずつ入れて返してください。"
             sch = schema(tax, phase, g["id"])
             labels: list[dict] = []
-            for _attempt in range(2):  # スキーマに合わない回答は 1 回だけ再試行
+            for attempt in range(2):  # スキーマに合わない回答は 1 回だけ再試行
+                if attempt and _would_exceed(res, max_cost, price):
+                    res.stopped = True
+                    res.skipped += len(g)
+                    break
                 try:
                     with _track_usage(client, res):
                         data = client.complete_json(user, schema=sch, name=TOOL_NAME, system=system)

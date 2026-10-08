@@ -35,6 +35,11 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 | office-review | `qa collect office-review --reviews DIR --history FILE` | レビュー結果の表と採否の判定 |
 
 - 取り込んだ指摘は `data/findings.csv`（Excel で開ける UTF-8）に **id で追加・更新** されます。本文が変わらなければ分類は残ります
+- 指摘表の id は `table:<ファイル名>:<番号の列の値>` です。番号が空の行は、行の位置ではなく内容（成果物・指摘者・指摘日・本文）の
+  ハッシュで id を付けます。同じ表を取り込み直したとき、表から無くなった行は `data/findings.csv` から **削除** します（件数を表示）
+- 中身の違う指摘に同じ id が付いたとき（番号の重複、別のフォルダの同じ名前のファイルなど）は、片方を捨てずにエラーで止めます
+- GitHub の日付は、UTC の時刻を `--timezone`（既定は環境変数 `QA_TIMEZONE`、無ければ `Asia/Tokyo`）の日付にします。
+  `--since` もその日付で比べ、それより古い PR が出たところで取得をやめます。通信は 429・5xx・接続エラーを再試行します
 - GitHub: 返信は元の指摘の「対応内容」になり、Bot のコメントは除きます。`--anonymize` でユーザー名を伏せ、
   `--save-raw` で取得した JSON を保存できます（以後は `--file` で再取得なしに試せます）
 - `data/` と `output/` は `.gitignore` 済みです。実データをコミットしないでください
@@ -52,6 +57,8 @@ LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md
 | `config/mask.yaml` の `words`・`patterns` | `＊＊＊` にする。社名・顧客名・システム名などを足す |
 
 - 本文・対応内容・成果物名など、区分（工程・重要度・判定・分類）以外の列はすべて伏せる対象です
+- id も伏せます。伏せた部分には元の値のハッシュ（8 桁）を付けるので、`指摘一覧_A社` と `指摘一覧_B社` の指摘が同じ id になって
+  消えることはありません（例: `table:指摘一覧_＊＊＊~3f2a9c1b:1`）
 - 伏せ字の前のバージョンで貯めた `data/findings.csv` も、分類・分析の前に伏せます
 - 氏名のまま集計したいときは `config/mask.yaml` の `pseudonymize` を `[]` にします。その場合も `data/` と `output/` は社外に出さないでください
 - 仮名は氏名から決まるので、同じ人は毎回同じ仮名になります。ただし氏名の候補が分かれば仮名から割り出せます。仮名のレポートも社内だけで使ってください
@@ -82,7 +89,10 @@ LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md
 
 - API キーは `.env` の `ANTHROPIC_API_KEY`（Anthropic の Console で発行。従量課金）。社内ゲートウェイ等を使うときは
   `ANTHROPIC_BASE_URL`（と必要なら `ANTHROPIC_AUTH_TOKEN`）を設定します
-- 見積もりが `config/llm.yaml` の `max_cost_usd`（既定 $5）を超えると実行しません（`--max-cost` で変更）
+- 見積もり（再試行の分の余裕 `retry_margin`。既定 30% を含む）が `config/llm.yaml` の `max_cost_usd`（既定 $5）を超えると
+  実行しません（`--max-cost` で変更）
+- 実行中も **実際にかかった費用**（API が返すトークン数）を数え、次の呼び出しで上限を超えそうなら残りの分類を止めます。
+  分類できた分は保存し、止めた件数を表示して終了コード 3 で終わります
 - 一度分類した指摘は `data/llm-cache.jsonl` に残り、再実行しても再送しません（費用がかからない）。
   キャッシュのキーには **プロンプトのハッシュ**（`prompts/classify.md`・工程の目安・`config/taxonomy.yaml` の定義）が入るので、
   プロンプトや定義を直すと、その工程の指摘は分類し直します
@@ -116,6 +126,9 @@ LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md
 分類は軽い作業なので既定は Haiku です。精度が足りないと感じたら、まず 50 件ほどを `--limit 50` で Sonnet と比べてください。
 
 ## 3. 分析する（analyze）
+
+指摘の本文や LLM の理由が `=` などで始まっても、`summary.xlsx` では数式にせず文字列のセルにします（数式注入の対策）。
+`data/findings.csv` でも `= + - @`・タブ・CR で始まる値の先頭に `'` を付けて保存し、読むときに外します。
 
 `qa analyze` で `output/` に次を出します。
 
@@ -161,10 +174,31 @@ office-review が書くレビュー結果（`reviews/*_result.md` の表: No / c
 
 ```bash
 ./setup.sh                    # Windows: setup.cmd
+pip install -e ".[dev]" -c constraints.txt   # 依存の版を CI と同じにする（constraints.txt は GitHub Actions の deps-lock が作る）
 ruff check . && ruff format --check . && pytest
 ```
 
+CI は Linux と Windows でテストを流し、bandit（SAST）と pip-audit（依存の脆弱性）も行います。
+
 構成: `sources/`（取り込み）→ `mask.py`（伏せ字）→ `model.py`（共通形式と保存）→ `classify/`（ルール・プロンプト・LLM・Copilot 連携）→ `analyze.py`（集計）→ `charts.py` / `report.py`（出力）
+
+## 変更点
+
+### 2026-10（fix/score-up-1007）
+
+利用者の動きが変わるもの:
+
+- id の伏せ字: `config/mask.yaml` の `words` などで伏せた部分を含む id は、`…＊＊＊~<ハッシュ>…` の形に変わります。
+  以前の形で貯めた行は別の指摘として残るので、気になるときは `data/findings.csv` を消して取り込み直してください
+- 指摘表の番号が空の行の id が、行の位置（`1`、`2`…）から内容のハッシュ（`h` + 10 桁）に変わります。
+  取り込み直すと、古い位置の id の行は「表から無くなった行」として削除されます（分類はし直しになります）
+- 指摘表を取り込み直したとき、表から無くなった行を削除します（以前は残り続け、件数が二重に数えられていました）
+- 中身の違う同じ id があると、取り込みをエラー（終了コード 2）で止めます（以前は後の行だけを残していました）
+- `data/findings.csv` で `= + - @` で始まる値の先頭に `'` を付けます（読み込むときに外します）。`'` で始まる値は `''` になります
+- GitHub の日付が UTC から日本時間（`--timezone`）になります。日本時間の 0〜9 時のコメントの日付が 1 日後ろにずれます
+- `classify --mode api` の見積もりに再試行の余裕（30%）が入り、上限に近い件数では実行しなくなることがあります。
+  実際の費用で途中で止まったときは終了コード 3 です
+- `model.merge` の戻り値に削除件数が増えました（`(結果, 追加, 更新, 削除)`）
 
 ## セキュリティ・ライセンス
 
