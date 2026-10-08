@@ -476,3 +476,54 @@ def test_previous_file_name_ids_are_moved_to_path_ids_with_labels(tmp_path: Path
     df = model.load(tmp_path / "data/findings.csv")
     assert list(df["id"]) == ["table:2026上期/指摘一覧:1"]
     assert (df.iloc[0]["type"], df.iloc[0]["classified_by"]) == ("A1", "human")
+
+
+# --- GitHub: --since の形式と --file での絞り込み ---------------------------------------------------
+
+
+@pytest.mark.parametrize("since", ["2026/04/01", "20260401", "2026-4-1", "2026-13-01", "2026-02-30", "昨日", "2026-04-01T00:00"])
+def test_github_since_must_be_yyyy_mm_dd(tmp_path: Path, since: str):
+    raw = tmp_path / "pulls.json"
+    raw.write_text(json.dumps({"repo": "o/r", "pulls": []}), encoding="utf-8")
+    rc, out = run(tmp_path, "collect", "github", "--file", str(raw), "--since", since)
+    assert rc == 2 and "--since" in out, out
+    assert not (tmp_path / "data/findings.csv").exists()
+
+
+def test_github_since_with_repo_is_checked_before_any_request(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GH_TOKEN", "dummy")
+    monkeypatch.setattr(github, "download", lambda *a, **k: pytest.fail("API を呼ばない"))
+    rc, out = run(tmp_path, "collect", "github", "--repo", "o/r", "--since", "2026/04/01")
+    assert rc == 2 and "YYYY-MM-DD" in out, out
+
+
+def _pr(number: int, updated: str | None) -> dict:
+    pr = {
+        "number": number,
+        "user": {"login": "a"},
+        "comments": [{"id": number, "body": f"[MUST] 指摘{number}", "created_at": "2026-09-01T00:00:00Z"}],
+    }
+    if updated is not None:
+        pr["updated_at"] = updated
+    return pr
+
+
+def test_github_since_is_applied_to_file(tmp_path: Path):
+    """--file と --since を併用したとき、--since を黙って無視せず、PR の updated_at（設定のタイムゾーンの日付）で絞る."""
+    raw = tmp_path / "pulls.json"
+    pulls = [_pr(1, "2026-09-30T16:00:00Z"), _pr(2, "2026-09-30T14:00:00Z"), _pr(3, None)]  # 日本時間 10/1 01:00・9/30 23:00
+    raw.write_text(json.dumps({"repo": "o/r", "pulls": pulls}), encoding="utf-8")
+    rc, out = run(tmp_path, "collect", "github", "--file", str(raw), "--since", "2026-10-01")
+    assert rc == 0, out
+    assert "PR 1 件を除きました" in out and "絞れない PR が 1 件" in out, out
+    texts = set(model.load(tmp_path / "data/findings.csv")["text"])
+    assert texts == {"指摘1", "指摘3"}  # 2 は除く。updated_at の無い 3 は残して警告
+
+
+def test_github_download_keeps_updated_at_for_saved_raw():
+    def fetch(url: str):
+        if "/pulls?" in url:
+            return [{"number": 1, "updated_at": "2026-10-02T00:00:00Z"}] if url.endswith("page=1") else []
+        return []
+
+    assert github.download("o/r", fetch)["pulls"][0]["updated_at"] == "2026-10-02T00:00:00Z"

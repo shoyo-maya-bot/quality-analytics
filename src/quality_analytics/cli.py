@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     src = g.add_mutually_exclusive_group(required=True)
     src.add_argument("--repo", help="owner/name（GH_TOKEN が必要）")
     src.add_argument("--file", type=Path, help="取得済みの JSON（--save-raw で保存したもの）")
-    g.add_argument("--since", default="", help="この日以降に更新された PR（YYYY-MM-DD）")
+    g.add_argument("--since", default="", help="この日以降に更新された PR（YYYY-MM-DD。--file のときも PR の updated_at で絞る）")
     g.add_argument("--phase", default="CD")
     g.add_argument("--only-tagged", action="store_true", help="[MUST] などのタグがあるコメントだけ")
     g.add_argument("--anonymize", action="store_true", help="ユーザー名を U-xxxxxx に置き換える")
@@ -180,8 +180,21 @@ def cmd_collect(args) -> int:
             ZoneInfo(args.timezone)
         except (ZoneInfoNotFoundError, ValueError):
             raise common_cli.UsageError(f"タイムゾーンが分かりません: {args.timezone}（例: Asia/Tokyo、UTC）") from None
+        try:
+            args.since = github.parse_since(args.since)
+        except ValueError as e:
+            raise common_cli.UsageError(str(e)) from None
         if args.file:
             data = load_structured(args.file)
+            data, dropped, unknown = github.filter_since(data, args.since, args.timezone)
+            if args.since:
+                print(f"--since {args.since}: 更新日がそれより前の PR {dropped} 件を除きました")
+            if unknown:
+                print(
+                    f"注意: --since {args.since} で絞れない PR が {unknown} 件あります（{args.file} に updated_at がありません。"
+                    "取り込みます。絞るときは --repo で取り直して --save-raw で保存し直してください）",
+                    file=sys.stderr,
+                )
         else:
             load_dotenv()
             data = github.download(args.repo, github.http_fetch(require_env("GH_TOKEN")), since=args.since, tz=args.timezone)
