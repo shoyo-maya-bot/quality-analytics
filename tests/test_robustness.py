@@ -409,3 +409,27 @@ def test_numeric_log_format_survives_redact_filter(tmp_path: Path):
         logger.setLevel(old)
     assert "llm usage: calls=1 in=100 out=50" in buf.getvalue()
     assert "Logging error" not in err.getvalue()
+
+
+# --- office-review: 消したレビュー結果の指摘を消す ------------------------------------------------
+
+
+def test_office_review_reimport_removes_deleted_review_results(tmp_path: Path):
+    """取り込み直したとき、消したレビュー結果（ファイル・行）の指摘は削除する（指摘表の取り込みと同じ扱い）."""
+    src = ROOT / "tests/contract/office-review/reviews"
+    reviews = tmp_path / "reviews"
+    reviews.mkdir()
+    for p in src.glob("*.md"):
+        (reviews / p.name).write_bytes(p.read_bytes())
+    other = _csv(tmp_path / "in/list.csv", [("1", "表の指摘")])
+    assert collect(tmp_path, other)[0] == 0
+    assert run(tmp_path, "collect", "office-review", "--reviews", str(reviews))[0] == 0
+    before = model.load(tmp_path / "data/findings.csv")
+    assert (before["id"].str.contains("2026-10-03_stock-db_result.md")).sum() == 3
+    (reviews / "2026-10-03_stock-db_result.md").unlink()
+    rc, out = run(tmp_path, "collect", "office-review", "--reviews", str(reviews))
+    assert rc == 0 and "削除 3 件" in out, out
+    after = model.load(tmp_path / "data/findings.csv")
+    assert not after["id"].str.contains("2026-10-03_stock-db_result.md").any()
+    assert "表の指摘" in set(after["text"])  # ほかの取り込み元は消さない
+    assert len(after) == len(before) - 3
