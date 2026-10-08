@@ -157,6 +157,9 @@ def cmd_collect(args) -> int:
         else:
             load_dotenv()
             data = github.download(args.repo, github.http_fetch(require_env("GH_TOKEN")), since=args.since, tz=args.timezone)
+            for note in data.get("truncated", []):
+                print(f"注意: {note}", file=sys.stderr)
+            print(f"{args.repo}: PR {len(data['pulls'])} 件を取得しました")
             if args.save_raw:
                 import json
 
@@ -233,6 +236,13 @@ def cmd_classify(args) -> int:
     )
     for pr in res.problems:
         print(f"NG {pr}")
+    if res.error:
+        print(
+            f"エラー: LLM API の呼び出しに失敗したため、残り {res.skipped} 件の分類を止めました（{res.error}）。"
+            f"分類できた分は {args.data} に保存しました。時間をおいて、もう一度実行してください（分類済みは送りません）",
+            file=sys.stderr,
+        )
+        return common_cli.ExitCode.RUNTIME
     if res.stopped:
         print(
             f"注意: 実際の費用が費用の上限 ${limit:.2f} に近づいたため、残り {res.skipped} 件の分類を止めました"

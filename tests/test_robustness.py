@@ -275,3 +275,137 @@ def test_estimate_includes_retry_margin(tmp_path: Path):
     est = llm.estimate(_many(3), TAX, conf, ROOT / "prompts")
     assert est.cost_with_margin(p, conf) == pytest.approx(est.cost(p) * (1 + llm.DEFAULT_RETRY_MARGIN))
     assert est.cost_with_margin(p, {**conf, "retry_margin": 0}) == pytest.approx(est.cost(p))
+
+
+# --- 第 2 回: キャッシュの壊れた行・GitHub の打ち切り・通信の失敗・ログの書式 ---------------------------------
+
+
+def test_llm_cache_skips_broken_lines_and_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    """キャッシュの最終行が書きかけでも、以後の実行が失敗しない（壊れた行は読み飛ばして分類し直す）."""
+    conf = {"model": "claude-haiku-4-5-20251001", "batch_size": 20}
+    cache = tmp_path / "cache.jsonl"
+    client = EchoLLM(lambda item: {"type": "C1", "topic": "", "root_cause": "", "reason": ""}, model=conf["model"])
+    llm.run(_many(2), TAX, conf, client, cache, ROOT / "prompts")
+    good = cache.read_text(encoding="utf-8").splitlines()
+    assert len(good) == 2
+    # 途中で止まった: 2 行目が書きかけ（改行も無い）・不正な行も混ざる
+    cache.write_text(good[0] + "\n" + '["not", "a", "record"]\n' + good[1][: len(good[1]) // 2], encoding="utf-8")
+    client = EchoLLM(lambda item: {"type": "C1", "topic": "", "root_cause": "", "reason": ""}, model=conf["model"])
+    with caplog.at_level("WARNING", logger="quality_analytics.classify.llm"):
+        out, res = llm.run(_many(2), TAX, conf, client, cache, ROOT / "prompts")
+    assert res.cached == 1 and res.classified == 1 and (out["type"] == "C1").all()
+    assert "壊れた行 2 行を読み飛ばしました" in caplog.text
+    # 書きかけの行の後ろに追記しても、新しい行は壊れない（改行を足してから追記する）
+    assert len(llm._load_cache(cache)) == 2
+
+
+def test_github_download_warns_when_max_pulls_cuts(caplog: pytest.LogCaptureFixture):
+    def fetch(url: str):
+        if "/pulls?" in url:
+            page = int(url.rsplit("page=", 1)[1])
+            return [{"number": page * 100 + i, "updated_at": "2026-09-30T00:00:00Z"} for i in range(100)] if page <= 3 else []
+        return []
+
+    with caplog.at_level("WARNING", logger="quality_analytics.sources.github"):
+        data = github.download("o/r", fetch, max_pulls=150)
+    assert len(data["pulls"]) == 150
+    assert any("150 件で打ち切りました" in n for n in data["truncated"])
+    assert "PR を 150 件で打ち切りました" in caplog.text
+
+
+def test_github_download_warns_when_pages_run_out(caplog: pytest.LogCaptureFixture):
+    """コメントが 50 ページ（5000 件）を超える PR: 黙って捨てずに警告し、件数を残す."""
+
+    def fetch(url: str):
+        if "/pulls?" in url:
+            return [{"number": 7, "updated_at": "2026-09-30T00:00:00Z"}] if url.endswith("page=1") else []
+        if "/comments" in url:
+            return [{"id": i, "body": "x"} for i in range(github.PER_PAGE)]  # いつまでも満杯
+        return []
+
+    with caplog.at_level("WARNING", logger="quality_analytics.sources.github"):
+        data = github.download("o/r", fetch)
+    assert len(data["pulls"][0]["comments"]) == github.MAX_PAGES * github.PER_PAGE
+    assert data["truncated"] == [
+        f"pulls/7/comments は {github.MAX_PAGES} ページ（{github.MAX_PAGES * github.PER_PAGE} 件）で打ち切りました"
+    ]
+    assert "取得を打ち切りました" in caplog.text
+
+
+def test_github_download_without_truncation_has_no_notes():
+    def fetch(url: str):
+        if "/pulls?" in url:
+            return [{"number": 1, "updated_at": "2026-09-30T00:00:00Z"}] if url.endswith("page=1") else []
+        return []
+
+    assert "truncated" not in github.download("o/r", fetch)
+
+
+def test_cli_github_prints_truncation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("GH_TOKEN", "dummy")
+    monkeypatch.setattr(github, "http_fetch", lambda token: object())
+    monkeypatch.setattr(
+        github, "download", lambda repo, fetch, since="", tz="": {"repo": repo, "pulls": [], "truncated": ["PR は 200 件で打ち切りました"]}
+    )
+    rc, out = run(tmp_path, "collect", "github", "--repo", "o/r")
+    assert rc == 0 and "注意: PR は 200 件で打ち切りました" in out and "PR 0 件を取得しました" in out
+
+
+class _FlakyLLM(EchoLLM):
+    """最初の ok 回だけ応答し、その後は接続できない（再試行しても失敗する）."""
+
+    def __init__(self, ok: int, **kw):
+        super().__init__(lambda item: {"type": "C1", "topic": "", "root_cause": "", "reason": ""}, max_retries=0, **kw)
+        self._ok = ok
+
+    def _open(self, req, timeout):
+        import urllib.error
+
+        if self._ok <= 0:
+            raise urllib.error.URLError("connection reset")
+        self._ok -= 1
+        return super()._open(req, timeout)
+
+
+def test_llm_run_stops_on_connection_error_and_keeps_results(tmp_path: Path):
+    conf = {"model": "claude-haiku-4-5-20251001", "batch_size": 2}
+    out, res = llm.run(_many(6), TAX, conf, _FlakyLLM(1, model=conf["model"]), tmp_path / "cache.jsonl", ROOT / "prompts")
+    assert res.error.startswith("APIConnectionError") and res.skipped == 4
+    assert (out["type"] == "C1").sum() == 2 and res.classified == 2
+
+
+def test_cli_saves_partial_results_on_connection_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    p = _csv(tmp_path / "in/list.csv", [(str(i), f"指摘 {i}") for i in range(1, 46)])
+    assert collect(tmp_path, p)[0] == 0
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy")
+    monkeypatch.setattr(llm, "make_client", lambda conf: _FlakyLLM(1, model=conf["model"]))
+    rc, out = run(tmp_path, "classify", "--mode", "api", "--yes")
+    assert rc == 3 and "LLM API の呼び出しに失敗" in out and "保存しました" in out, out
+    df = model.load(tmp_path / "data/findings.csv")
+    assert 0 < (df["type"] == "C1").sum() < 45  # 通信の失敗の前に分類できた分は findings.csv に残る
+
+
+def test_numeric_log_format_survives_redact_filter(tmp_path: Path):
+    """devtools-common の RedactFilter で %d のログが消えていた件（28bab4c で修正）の再現テスト."""
+    import logging
+
+    from devtools_common.log import RedactFilter
+
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.addFilter(RedactFilter())
+    logger = logging.getLogger("quality_analytics.classify.llm")
+    logger.addHandler(handler)
+    old = logger.level
+    logger.setLevel(logging.INFO)
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            conf = {"model": "claude-haiku-4-5-20251001", "batch_size": 20}
+            client = EchoLLM(lambda item: {"type": "C1", "topic": "", "root_cause": "", "reason": ""}, model=conf["model"])
+            llm.run(_many(1), TAX, conf, client, tmp_path / "cache.jsonl", ROOT / "prompts")
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old)
+    assert "llm usage: calls=1 in=100 out=50" in buf.getvalue()
+    assert "Logging error" not in err.getvalue()
