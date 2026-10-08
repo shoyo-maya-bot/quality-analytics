@@ -169,3 +169,32 @@ def test_price_uses_shared_table_and_warns_on_override(caplog: pytest.LogCapture
     assert p is not None and (p.input, p.output) == (9.0, 99.0)
     assert "非推奨" in caplog.text
     assert llm.price("unknown-model", {}) is None
+
+
+def test_label_outside_definition_is_not_cached_when_id_contains_colons(tmp_path: Path):
+    """id は「table:指摘一覧.xlsx:1」のように「:」を含む. 定義に合わない分類をキャッシュに残さない."""
+    df = model.normalize(
+        pd.DataFrame(
+            [
+                {"id": "table:指摘一覧.xlsx:1", "phase": "BD", "severity": "MUST", "text": "桁が書かれていない"},
+                {"id": "table:指摘一覧.xlsx:2", "phase": "BD", "severity": "NITS", "text": "誤字"},
+            ]
+        )
+    )
+    labels = [
+        {"id": "table:指摘一覧.xlsx:1", "type": "A1", "topic": "API・IF", "root_cause": "R2", "reason": "桁が無い"},
+        # スキーマ（enum）には合うが定義に合わない: root_cause は A の指摘だけ
+        {"id": "table:指摘一覧.xlsx:2", "type": "B1", "topic": "", "root_cause": "R2", "reason": "誤字"},
+    ]
+    cache = tmp_path / "cache.jsonl"
+    out, res = llm.run(df, TAX, CONF, _client([tool_reply(labels)]), cache, ROOT / "prompts")
+    assert res.problems == ["table:指摘一覧.xlsx:2: root_cause は A の指摘だけに付けます"]
+    assert list(out["type"]) == ["A1", ""]
+    assert res.classified == 1
+    assert len(cache.read_text(encoding="utf-8").splitlines()) == 1
+    # 次の実行では、定義に合わなかった指摘だけを送り直す
+    fixed = [{**labels[1], "root_cause": ""}]
+    client = _client([tool_reply(fixed)])
+    out, res = llm.run(df, TAX, CONF, client, cache, ROOT / "prompts")
+    assert res.cached == 1 and res.classified == 1 and list(out["type"]) == ["A1", "B1"]
+    assert len(client.requests) == 1

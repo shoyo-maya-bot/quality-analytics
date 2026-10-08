@@ -356,9 +356,9 @@ def run(
                 break
             if res.error:
                 continue
-            out, probs = prompt.apply(out, labels, tax, f"llm:{model}")
-            res.problems += probs
-            bad_ids = {p.split(":", 1)[0] for p in probs}
+            out, detailed = prompt.apply_detailed(out, labels, tax, f"llm:{model}")
+            res.problems += [f"{i}: {msg}" for i, msg in detailed]
+            bad_ids = {i for i, _ in detailed}  # id は「:」を含むので、問題の文字列からは取り出さない
             by_id = {str(lab.get("id")): lab for lab in labels}
             for _, r in g.iterrows():
                 lab = by_id.get(r["id"])
