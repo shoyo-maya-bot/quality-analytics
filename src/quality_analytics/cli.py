@@ -46,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
     t = c.add_parser("table", help="指摘表（.xlsx / .csv / .tsv）")
     t.add_argument("files", type=Path, nargs="+")
     t.add_argument("--mapping", type=Path, help="列の対応（既定: config/sources/table.yaml）")
+    t.add_argument(
+        "--root",
+        type=Path,
+        default=Path("."),
+        help="id に使う相対パスの基準（既定: カレントフォルダ）。id は table:<ここからの相対パス>:<番号>。別のフォルダの同名ファイルは別の指摘",
+    )
     g = c.add_parser("github", help="GitHub の PR レビューコメント")
     src = g.add_mutually_exclusive_group(required=True)
     src.add_argument("--repo", help="owner/name（GH_TOKEN が必要）")
@@ -115,14 +121,33 @@ def _load(args):
     return model.normalize(_masker(args).frame(model.load(args.data)))
 
 
-def _store(args, new, scopes: list[str] | None = None) -> int:
-    """取り込んだ指摘を伏せ字にして保存する. scopes（id の先頭）で始まり、今回に無い既存の行は削除する."""
+def _store(args, new, scopes: list[str] | None = None, legacy: dict[str, str] | None = None) -> int:
+    """取り込んだ指摘を伏せ字にして保存する. scopes（id の先頭）で始まり、今回に無い既存の行は削除する.
+
+    legacy: 新しい id の先頭 → 以前の版の id の先頭（ファイル名だけの id）. 以前の id の行は、新しい id の同じ番号・同じ本文の行に
+    置き換える（分類の結果は引き継ぐ）。置き換えられない以前の行は残し、警告する。
+    """
     m = _masker(args)
     new = model.normalize(new)
     names = m.names(v for c in m.pseudonymize if c in new.columns for v in new[c].astype(str))
-    masked_scopes = [m.ident(s.rstrip(":"), names) + ":" for s in scopes or []]
+
+    def mid(s: str) -> str:
+        return m.ident(s.rstrip(":"), names) + ":"
+
+    masked_scopes = [mid(s) for s in scopes or []]
+    existing = m.frame(model.load(args.data))
+    if legacy:
+        existing, moved, left = model.migrate_ids(existing, m.frame(new), {mid(k): mid(v) for k, v in legacy.items()})
+        if moved:
+            print(f"以前の形式の id（ファイル名だけ）の {moved} 件を、取り込み元のパスを含む id に置き換えました（分類は引き継ぎます）")
+        for old, n in left.items():
+            print(
+                f"注意: 以前の形式の id（{old}…）の行が {n} 件残っています（別のフォルダの同じ名前の表か、表から消えた行）。"
+                f"不要なら、その表を --root を合わせて取り込み直すか、{args.data} から削除してください",
+                file=sys.stderr,
+            )
     try:
-        merged, added, updated, deleted = model.merge(m.frame(model.load(args.data)), m.frame(new), masked_scopes)
+        merged, added, updated, deleted = model.merge(existing, m.frame(new), masked_scopes)
     except model.DuplicateIdError as e:
         raise common_cli.UsageError(str(e)) from None
     model.save(merged, args.data)
@@ -135,18 +160,21 @@ def _store(args, new, scopes: list[str] | None = None) -> int:
 def cmd_collect(args) -> int:
     if args.source == "table":
         conf = _yaml(args.mapping or args.config_dir / "sources/table.yaml")
-        frames, scopes = [], []
+        frames, scopes, legacy = [], [], {}
         for f in args.files:
             if not f.is_file():
                 raise common_cli.UsageError(f"見つかりません: {f}")
             try:
-                frames.append(table.read(f, conf))
+                frames.append(table.read(f, conf, args.root))
             except ValueError as e:
                 raise common_cli.UsageError(str(e)) from None
-            scopes.append(table.scope(f, conf))
+            scopes.append(table.scope(f, conf, args.root))
+            legacy[scopes[-1]] = table.legacy_scope(f, conf)
+        # 以前の id の先頭が、今回のどれかの表の範囲そのもの（ルート直下の表）なら付け替えない
+        legacy = {k: v for k, v in legacy.items() if v not in scopes}
         import pandas as pd
 
-        return _store(args, pd.concat(frames, ignore_index=True), scopes)
+        return _store(args, pd.concat(frames, ignore_index=True), scopes, legacy)
     if args.source == "github":
         try:
             ZoneInfo(args.timezone)

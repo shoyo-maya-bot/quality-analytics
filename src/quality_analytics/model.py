@@ -98,6 +98,42 @@ def _check_duplicates(new: pd.DataFrame) -> pd.DataFrame:
     return new
 
 
+def migrate_ids(existing: pd.DataFrame, new: pd.DataFrame, legacy: dict[str, str]) -> tuple[pd.DataFrame, int, dict[str, int]]:
+    """以前の版の id（先頭がファイル名だけ）の行を、新しい id（先頭が取り込み元のパス）に付け替える.
+
+    legacy: 新しい id の先頭 → 以前の id の先頭. 以前の id の行は、末尾（番号）が同じで本文も同じ新しい行があるときだけ、
+    その新しい id に付け替える（分類の結果を引き継ぐ）。同じ以前の行に当たる新しい範囲が複数あるとき（別のフォルダの同名の表を
+    一度に取り込んだとき）は、どちらのものか決められないので付け替えない。
+    → (付け替えた後の既存の行, 付け替えた件数, 以前の id の先頭 → 付け替えずに残った件数)
+    """
+    existing, new = normalize(existing), normalize(new)
+    if existing.empty or not legacy:
+        return existing, 0, {}
+    new_text = dict(zip(new["id"], new["text"], strict=True))
+    have = set(existing["id"])
+    olds: dict[str, list[str]] = {}
+    for new_scope, old_scope in legacy.items():
+        olds.setdefault(old_scope, []).append(new_scope)
+    ids = list(existing["id"])
+    moved = 0
+    left: dict[str, int] = {}
+    for i, (rid, text) in enumerate(zip(existing["id"], existing["text"], strict=True)):
+        for old_scope, new_scopes in olds.items():
+            if not rid.startswith(old_scope):
+                continue
+            tail = rid[len(old_scope) :]
+            hits = [s + tail for s in new_scopes if new_text.get(s + tail) == text and s + tail not in have]
+            if len(hits) == 1:
+                ids[i] = hits[0]
+                have.add(hits[0])
+                moved += 1
+            else:
+                left[old_scope] = left.get(old_scope, 0) + 1
+    out = existing.copy()
+    out["id"] = ids
+    return out, moved, left
+
+
 def merge(existing: pd.DataFrame, new: pd.DataFrame, replace_scopes: Iterable[str] = ()) -> tuple[pd.DataFrame, int, int, int]:
     """id で追加・更新する. 分類の結果は、本文が変わっていなければ残す. → (結果, 追加件数, 更新件数, 削除件数).
 

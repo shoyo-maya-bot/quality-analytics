@@ -52,7 +52,7 @@ def _config_with_words(tmp_path: Path, words: list[str]) -> Path:
 
 def collect(tmp_path: Path, *files: Path, words: list[str] | None = None) -> tuple[int, str]:
     conf = _config_with_words(tmp_path, words or [])
-    return run(tmp_path, "collect", "table", *map(str, files), config_dir=conf)
+    return run(tmp_path, "collect", "table", "--root", str(tmp_path / "in"), *map(str, files), config_dir=conf)
 
 
 def _csv(path: Path, rows: list[tuple[str, str]]) -> Path:
@@ -433,3 +433,46 @@ def test_office_review_reimport_removes_deleted_review_results(tmp_path: Path):
     assert not after["id"].str.contains("2026-10-03_stock-db_result.md").any()
     assert "表の指摘" in set(after["text"])  # ほかの取り込み元は消さない
     assert len(after) == len(before) - 3
+
+
+# --- 指摘表: 別のフォルダの同じ名前の表 ------------------------------------------------------------
+
+
+def test_same_file_name_in_other_folders_keeps_both_tables(tmp_path: Path):
+    """取り込み元の範囲はファイル名ではなく相対パス. 片方を取り込み直しても、別のフォルダの同名の表の行は消えない."""
+    a = _csv(tmp_path / "in/2026上期/指摘一覧.csv", [("1", "上期の指摘"), ("2", "上期の二つ目")])
+    b = _csv(tmp_path / "in/2026下期/指摘一覧.csv", [("1", "下期の指摘")])
+    conf = _config_with_words(tmp_path, [])
+    root = ["--root", str(tmp_path / "in")]
+    assert run(tmp_path, "collect", "table", *root, str(a), str(b), config_dir=conf)[0] == 0  # 同じ番号でも id は別
+    df = model.load(tmp_path / "data/findings.csv").set_index("text")
+    assert df.loc["上期の指摘", "id"] == "table:2026上期/指摘一覧:1"
+    assert df.loc["下期の指摘", "id"] == "table:2026下期/指摘一覧:1"
+    rc, out = run(tmp_path, "collect", "table", *root, str(b), config_dir=conf)  # 下期だけ取り込み直す
+    assert rc == 0 and "削除 0 件" in out, out
+    assert set(model.load(tmp_path / "data/findings.csv")["text"]) == {"上期の指摘", "上期の二つ目", "下期の指摘"}
+
+
+def test_file_directly_under_root_keeps_previous_id(tmp_path: Path):
+    p = _csv(tmp_path / "in/list.csv", [("1", "一つ目")])
+    df = table.read(p, {"columns": {"id": "No", "text": "指摘内容"}}, root=tmp_path / "in")
+    assert list(df["id"]) == ["table:list:1"]
+    assert table.source_key(p, tmp_path) == "in/list"
+    assert table.source_key(p) == "list"  # root を省くとファイルのフォルダ（ファイル名だけ）
+
+
+def test_previous_file_name_ids_are_moved_to_path_ids_with_labels(tmp_path: Path):
+    """以前の版（ファイル名だけの id）で貯めた行は、取り込み直すとパスの id に付け替え、分類を引き継ぐ（二重に数えない）."""
+    p = _csv(tmp_path / "in/2026上期/指摘一覧.csv", [("1", "上期の指摘")])
+    old = model.normalize(
+        pd.DataFrame(
+            [{"id": "table:指摘一覧:1", "source": "table", "phase": "BD", "text": "上期の指摘", "type": "A1", "classified_by": "human"}]
+        )
+    )
+    model.save(old, tmp_path / "data/findings.csv")
+    conf = _config_with_words(tmp_path, [])
+    rc, out = run(tmp_path, "collect", "table", "--root", str(tmp_path / "in"), str(p), config_dir=conf)
+    assert rc == 0 and "1 件を、取り込み元のパスを含む id に置き換えました" in out, out
+    df = model.load(tmp_path / "data/findings.csv")
+    assert list(df["id"]) == ["table:2026上期/指摘一覧:1"]
+    assert (df.iloc[0]["type"], df.iloc[0]["classified_by"]) == ("A1", "human")
