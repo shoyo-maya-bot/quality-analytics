@@ -108,7 +108,14 @@ def test_frame_masks_unknown_columns_by_default():
 def test_short_ascii_login_is_replaced_only_as_a_word():
     df = model.normalize(
         pd.DataFrame(
-            [{"id": "1", "reviewer": "api", "author": "例題花子", "text": "api さんの指摘: rapid な取込で api_key と apiv2 は別。(api) も対象"}]
+            [
+                {
+                    "id": "1",
+                    "reviewer": "api",
+                    "author": "例題花子",
+                    "text": "api さんの指摘: rapid な取込で api_key と apiv2 は別。(api) も対象",
+                }
+            ]
         )
     )
     r = mask.Masker().frame(df).iloc[0]

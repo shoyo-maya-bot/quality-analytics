@@ -90,9 +90,7 @@ def parse(answer: str) -> list[dict[str, Any]]:
     return [d for d in data if isinstance(d, dict)]
 
 
-def apply_detailed(
-    df: pd.DataFrame, labels: list[dict[str, Any]], tax: Taxonomy, by: str
-) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
+def apply_detailed(df: pd.DataFrame, labels: list[dict[str, Any]], tax: Taxonomy, by: str) -> tuple[pd.DataFrame, list[tuple[str, str]]]:
     """分類の結果を反映する. 定義に合わないものは反映せず、(id, 理由) の組として返す.
 
     id は「table:指摘一覧:1」のように「:」を含むので、問題の文字列から id を取り出さずにこの組を使う。
