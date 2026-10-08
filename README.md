@@ -14,6 +14,7 @@ office-review の結果 ─┘                                   （ルール / 
 
 1. clone する
 2. **Windows**: `setup.cmd` をダブルクリック ／ **macOS・Linux**: `./setup.sh`
+   （`constraints.txt` があれば `-c constraints.txt` で依存の版を CI と同じにして入れます）
 3. `.venv` を有効にしてサンプルで試す（API は呼びません）
 
 ```bash
@@ -40,6 +41,8 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 - 中身の違う指摘に同じ id が付いたとき（番号の重複、別のフォルダの同じ名前のファイルなど）は、片方を捨てずにエラーで止めます
 - GitHub の日付は、UTC の時刻を `--timezone`（既定は環境変数 `QA_TIMEZONE`、無ければ `Asia/Tokyo`）の日付にします。
   `--since` もその日付で比べ、それより古い PR が出たところで取得をやめます。通信は 429・5xx・接続エラーを再試行します
+- GitHub の取得は PR 200 件まで、1 つの一覧（PR・コメント・レビュー）は 50 ページ（5000 件）までです。
+  そこで打ち切ったときは黙って捨てず、「注意: … 打ち切りました」と件数を表示します（`--since` で期間を絞ってください）
 - GitHub: 返信は元の指摘の「対応内容」になり、Bot のコメントは除きます。`--anonymize` でユーザー名を伏せ、
   `--save-raw` で取得した JSON を保存できます（以後は `--file` で再取得なしに試せます）
 - `data/` と `output/` は `.gitignore` 済みです。実データをコミットしないでください
@@ -94,6 +97,8 @@ LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md
 - 実行中も **実際にかかった費用**（API が返すトークン数）を数え、次の呼び出しで上限を超えそうなら残りの分類を止めます。
   分類できた分は保存し、止めた件数を表示して終了コード 3 で終わります
 - 一度分類した指摘は `data/llm-cache.jsonl` に残り、再実行しても再送しません（費用がかからない）。
+  途中で止まって壊れた行があっても読み飛ばして警告し、その指摘だけ分類し直します。
+- 通信の失敗（再試行しても失敗）で止まったときも、それまでに分類できた分は `data/findings.csv` に保存してから終了します（終了コード 3）。
   キャッシュのキーには **プロンプトのハッシュ**（`prompts/classify.md`・工程の目安・`config/taxonomy.yaml` の定義）が入るので、
   プロンプトや定義を直すと、その工程の指摘は分類し直します
 - 送る本文は取り込み時に伏せたものです（上の「個人情報の伏せ字」）。送る直前にもメールアドレス・電話番号を伏せ直します。
@@ -173,8 +178,8 @@ office-review が書くレビュー結果（`reviews/*_result.md` の表: No / c
 ## 開発
 
 ```bash
-./setup.sh                    # Windows: setup.cmd
-pip install -e ".[dev]" -c constraints.txt   # 依存の版を CI と同じにする（constraints.txt は GitHub Actions の deps-lock が作る）
+./setup.sh                    # Windows: setup.cmd（どちらも constraints.txt で依存の版を CI と同じにする）
+# 手で入れるとき: pip install -e ".[dev]" -c constraints.txt（constraints.txt は GitHub Actions の deps-lock が作る）
 ruff check . && ruff format --check . && pytest
 ```
 

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from devtools_common.llm import Completion, LLMClient, MaxTokensError, Price, SchemaValidationError, price_for
+from devtools_common.llm import Completion, LLMClient, LLMError, MaxTokensError, Price, SchemaValidationError, price_for
 
 from ..taxonomy import Taxonomy
 from . import prompt
@@ -201,14 +201,42 @@ def _cache_key(tax: Taxonomy, model: str, phase: str, text: str, phash: str) -> 
 
 
 def _load_cache(path: Path) -> dict[str, dict]:
+    """結果のキャッシュを読む. 壊れた行（途中で止まって書きかけの最終行など）は読み飛ばして警告する.
+
+    読み飛ばした行の指摘は分類し直す（キャッシュに無い扱い）。壊れた行が 1 行あるだけで以後の実行が
+    すべて失敗しないようにする。
+    """
     if not path.is_file():
         return {}
-    out = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
+    out: dict[str, dict] = {}
+    bad: list[int] = []
+    for no, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
             rec = json.loads(line)
-            out[rec["key"]] = rec
+            key = rec["key"]
+            if not isinstance(key, str) or not isinstance(rec.get("label"), dict):
+                raise TypeError("key / label の形が違います")
+        except (ValueError, KeyError, TypeError):
+            bad.append(no)
+            continue
+        out[key] = rec
+    if bad:
+        shown = ", ".join(str(n) for n in bad[:10]) + (" ほか" if len(bad) > 10 else "")
+        log.warning("%s: 壊れた行 %d 行を読み飛ばしました（行 %s）。その指摘は分類し直します", path, len(bad), shown)
     return out
+
+
+def _end_with_newline(path: Path) -> None:
+    """書きかけの最終行（改行で終わらない）があれば改行を足す. 次の追記が壊れた行につながらないようにする."""
+    if path.is_file() and path.stat().st_size:
+        with path.open("rb") as fh:
+            fh.seek(-1, os.SEEK_END)
+            last = fh.read(1)
+        if last != b"\n":
+            with path.open("ab") as fh:
+                fh.write(b"\n")
 
 
 @dataclass
@@ -223,6 +251,7 @@ class RunResult:
     calls: int = 0
     stopped: bool = False  # 費用の上限で途中で止めた
     skipped: int = 0  # 止めたために分類しなかった件数
+    error: str = ""  # 通信の失敗（再試行しても失敗した）で途中で止めたときの理由. 止めるまでの結果は out に入っている
 
     def cost(self, p: Price) -> float:
         return (
@@ -285,8 +314,12 @@ def run(
         todo_idx.append(i)
     todo = out.loc[todo_idx]
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    _end_with_newline(cache_path)
     with cache_path.open("a", encoding="utf-8") as fh:
         for phase, g in batches(todo, int(conf.get("batch_size", 20))):
+            if res.error:
+                res.skipped += len(g)
+                continue
             if res.stopped or _would_exceed(res, max_cost, price):
                 res.stopped = True
                 res.skipped += len(g)
@@ -312,8 +345,17 @@ def run(
                         "config/llm.yaml の batch_size を減らすか max_output_tokens を増やしてください"
                     )
                     break
+                except (LLMError, OSError, ValueError) as e:
+                    # 通信の失敗（API のエラー・接続できない・応答が読めない）. 残りは送らずに止め、
+                    # ここまでの結果を呼び出し側で保存させる（例外のまま抜けると分類できた分まで保存されない）
+                    res.error = f"{type(e).__name__}: {e}"
+                    res.skipped += len(g)
+                    log.warning("LLM API の呼び出しに失敗したため、残りの分類を止めます（%s）", res.error)
+                    break
                 labels = list(data["labels"])
                 break
+            if res.error:
+                continue
             out, probs = prompt.apply(out, labels, tax, f"llm:{model}")
             res.problems += probs
             bad_ids = {p.split(":", 1)[0] for p in probs}
