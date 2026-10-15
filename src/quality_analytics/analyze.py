@@ -82,13 +82,15 @@ def run(
     rows = []
     for name, g in df.groupby("reviewer"):
         decided = g[g["decision"] != ""]
+        classified = int((g["type"] != "").sum())  # 率の分母は全体の率と同じく分類済みの件数
         rows.append(
             {
                 "レビュアー": name or "（不明）",
                 "件数": len(g),
+                "分類済み": classified,
                 **{s: int((g["severity"] == s).sum()) for s in SEVERITIES},
-                "欠陥(A)率%": _pct((g["group"] == "A").sum(), len(g)),
-                "ノイズ(B)率%": _pct((g["group"] == "B").sum(), len(g)),
+                "欠陥(A)率%": _pct((g["group"] == "A").sum(), classified),
+                "ノイズ(B)率%": _pct((g["group"] == "B").sum(), classified),
                 "採用率%": _pct((decided["decision"] == "adopted").sum(), len(decided)) if len(decided) else None,
             }
         )
@@ -145,7 +147,7 @@ def _insights(df: pd.DataFrame, a: Analysis, tax: Taxonomy, noise_threshold: flo
             out.append(f"欠陥が多い観点: {'、'.join(f'{k}（{v}）' for k, v in topics.head(3).items())}。")
     rev = a.tables.get("レビュアー別")
     if rev is not None and not rev.empty:
-        noisy = rev[(rev["ノイズ(B)率%"] >= noise_threshold) & (rev["件数"] >= 3)]
+        noisy = rev[(rev["ノイズ(B)率%"] >= noise_threshold) & (rev["分類済み"] >= 3)]
         for _, r in noisy.iterrows():
             out.append(
                 f"{r['レビュアー']} の指摘はノイズ（B）が {r['ノイズ(B)率%']}% です。表記・好みの指摘はまとめて伝えると、作成者の負担が減ります。"

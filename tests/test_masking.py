@@ -105,6 +105,33 @@ def test_frame_masks_unknown_columns_by_default():
     assert mask.Masker().frame(df).iloc[0]["memo"] == mask.MASK
 
 
+def test_short_ascii_login_is_replaced_only_as_a_word():
+    df = model.normalize(
+        pd.DataFrame(
+            [
+                {
+                    "id": "1",
+                    "reviewer": "api",
+                    "author": "例題花子",
+                    "text": "api さんの指摘: rapid な取込で api_key と apiv2 は別。(api) も対象",
+                }
+            ]
+        )
+    )
+    r = mask.Masker().frame(df).iloc[0]
+    alias = mask.pseudonym("api")
+    assert r["reviewer"] == alias
+    assert r["text"] == f"{alias} さんの指摘: rapid な取込で api_key と apiv2 は別。({alias}) も対象"
+
+
+def test_japanese_and_long_names_are_replaced_inside_text():
+    m = mask.Masker()
+    names = m.names(["例題花子", "taro.yamada"])
+    assert m.text("例題花子さん / taro.yamada2 の件", names) == (
+        f"{mask.pseudonym('例題花子')}さん / {mask.pseudonym('taro.yamada')}2 の件"
+    )
+
+
 def test_frame_skips_ai_reviewers_and_can_keep_names():
     df = model.normalize(pd.DataFrame([{"id": "1", "reviewer": "AI:dba", "author": "例題花子", "text": "x"}]))
     assert mask.Masker().frame(df).iloc[0]["reviewer"] == "AI:dba"

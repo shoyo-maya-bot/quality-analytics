@@ -331,11 +331,33 @@ def test_analyze_tables_and_insights():
     a = analyze.run(df, TAX)
     rev = a.tables["レビュアー別"].set_index("レビュアー")
     assert rev.loc["R1", "ノイズ(B)率%"] == 100.0
-    assert rev.loc["R2", "欠陥(A)率%"] == 50.0
+    assert rev.loc["R2", "欠陥(A)率%"] == 100.0  # 分母は分類済み（R2 の未分類 1 件は数えない）
+    assert rev.loc["R2", "分類済み"] == 1
     assert a.tables["欠陥 観点×真因"].loc["バッチ", "計"] == 1
     text = "\n".join(a.insights)
     assert "未分類の指摘が 1 件" in text and "R1 の指摘はノイズ" in text and "R2 前提・制約の確認漏れ" in text
 
 
+def test_reviewer_noise_rate_uses_classified_count_like_overall_rate():
+    rows = [{"id": f"b{i}", "reviewer": "R1", "phase": "BD", "severity": "NITS", "type": "B1"} for i in range(3)]
+    rows += [{"id": f"u{i}", "reviewer": "R1", "phase": "BD", "severity": "NITS", "type": ""} for i in range(3)]
+    rows += [{"id": "c", "reviewer": "R1", "phase": "BD", "severity": "Q", "type": "C1"}]
+    a = analyze.run(model.normalize(pd.DataFrame(rows)), TAX, noise_threshold=60.0)
+    r = a.tables["レビュアー別"].set_index("レビュアー").loc["R1"]
+    assert (r["件数"], r["分類済み"], r["ノイズ(B)率%"]) == (7, 4, 75.0)
+    text = "\n".join(a.insights)
+    # レビュアー 1 人なら、レビュアー別と全体のノイズ率は同じ値になる
+    assert "R1 の指摘はノイズ（B）が 75.0%" in text and "全体のノイズ（B）率が 75.0%" in text
+
+
 def test_analyze_without_data_is_usage_error(tmp_path: Path):
     assert run(tmp_path, "analyze")[0] == 2
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "x"])
+def test_classify_limit_must_be_positive(tmp_path: Path, value: str):
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err), pytest.raises(SystemExit) as e:
+        main(["--data", str(tmp_path / "f.csv"), "classify", "--mode", "export", "--limit", value])
+    assert e.value.code == 2
+    assert "--limit" in err.getvalue()

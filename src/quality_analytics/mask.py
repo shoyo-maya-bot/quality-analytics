@@ -1,6 +1,8 @@
 """個人情報の伏せ字. 取り込むとき（と読み込むとき）に 1 回かけ、以後の出力はすべて伏せた値だけを使う.
 
-- 氏名の列（既定: reviewer・author）は U-xxxxxx の仮名にする。本文中の同じ氏名も同じ仮名にする
+- 氏名の列（既定: reviewer・author）は U-xxxxxx の仮名にする。本文中の同じ氏名も同じ仮名にする.
+  短い英数字の氏名（ログイン名など. SHORT_ASCII_NAME 文字以下）は、単語の一部（「api」に対する「rapid」など）は
+  置き換えず、前後が英数字・「_」でないところだけを置き換える
 - メールアドレス・電話番号は、全角・区切りなし・+81 も含めて常に伏せる（設定で外せない）
 - config/mask.yaml の words（社名・システム名など）と patterns（正規表現）も伏せる
 - 区分の列（KEEP）以外は、未知の列も含めてすべて伏せる対象にする（既定で伏せる）
@@ -10,6 +12,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import re
 from collections.abc import Iterable
@@ -25,6 +28,8 @@ MASK = llm.MASK  # ＊＊＊
 KEEP = frozenset({"source", "phase", "severity", "decision", "created_at", "type", "topic", "root_cause", "classified_by"})
 PEOPLE = ("reviewer", "author")
 _PSEUDO = re.compile(r"^U-[0-9a-f]{6}$")
+SHORT_ASCII_NAME = 5  # この文字数以下の英数字だけの氏名は、本文では単語として現れたところだけを置き換える
+_WORD = "0-9A-Za-z_"
 
 # メールアドレス・電話番号の検出は devtools_common.llm と共通（全角・区切りなし・+81 を含む）
 EMAIL = llm.EMAIL_RE
@@ -37,6 +42,19 @@ def pseudonym(name: str) -> str:
 
 def _digest(s: str, n: int = 8) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:n]
+
+
+@functools.lru_cache(maxsize=1024)
+def _name_pattern(name: str) -> re.Pattern[str] | None:
+    """短い英数字の氏名を単語として探す正規表現. それ以外（日本語の氏名・長い名前）は None（そのまま置き換える）."""
+    if name.isascii() and len(name) <= SHORT_ASCII_NAME:
+        return re.compile(rf"(?<![{_WORD}]){re.escape(name)}(?![{_WORD}])")
+    return None
+
+
+def _replace_name(s: str, name: str, alias: str) -> str:
+    pat = _name_pattern(name)
+    return s.replace(name, alias) if pat is None else pat.sub(alias, s)
 
 
 def _is_kept_name(v: str) -> bool:
@@ -57,7 +75,7 @@ class Masker:
         if not s:
             return s
         for name, alias in (names or {}).items():  # 氏名 → 仮名（このツール固有）
-            s = s.replace(name, alias)
+            s = _replace_name(s, name, alias)
         return self._generic.text(s)
 
     def ident(self, s: str, names: dict[str, str] | None = None) -> str:
