@@ -4,7 +4,10 @@
 元の指摘の「対応内容」としてつなぐ。Bot のコメントは除く。
 
 取得は REST API（GH_TOKEN）。通信は devtools_common の HttpClient（GET は 429・5xx・接続エラーを再試行、
-Retry-After に従う。1 秒あたりの回数も抑える）。PR は更新の新しい順に 1 ページずつ取り、--since より古い PR が出たら止める。
+Retry-After に従う。1 秒あたりの回数も抑える）。GitHub が 403 で返すレート制限（secondary rate limit・残り 0）も、
+待ち時間が RATE_LIMIT_MAX_WAIT 秒以内なら 429 と同じく待って再試行する。
+取得の途中で失敗したら、それまでに取り終えた PR は捨てずに返し（"error" に理由）、呼び出し側が取り込む。
+PR は更新の新しい順に 1 ページずつ取り、--since より古い PR が出たら止める。
 日付（created_at・--since との比較）は UTC の時刻を設定のタイムゾーン（既定 Asia/Tokyo）の日付にして使う。
 --since は YYYY-MM-DD（誤りは引数の誤り）。--file でも PR の updated_at で同じように絞る（updated_at の無い PR は絞れないので残し、件数を警告）。
 オフラインで試すときは、同じ形の JSON（--file）を読む:
@@ -15,14 +18,18 @@ Retry-After に従う。1 秒あたりの回数も抑える）。PR は更新の
 from __future__ import annotations
 
 import datetime as dt
+import email.message
 import logging
+import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Callable, Iterator
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
-from devtools_common.httpclient import HttpClient
+from devtools_common.httpclient import HttpClient, HttpError, safe_urlopen
 
 from ..mask import pseudonym
 from ..model import normalize, split_tag
@@ -36,12 +43,68 @@ DEFAULT_TZ = "Asia/Tokyo"
 Fetch = Callable[[str], Any]
 
 
+RATE_LIMIT_MAX_WAIT = 120.0  # 403 のレート制限で待つ上限（秒）. これより長く待つ必要があるときは再試行せずに失敗にする
+RATE_LIMIT_DEFAULT_WAIT = 60.0  # Retry-After も x-ratelimit-reset も無い secondary rate limit で待つ秒数（GitHub の推奨は 1 分以上）
+
+
+def rate_limit_wait(status: int, headers: Any, body: str, now: Callable[[], float] = time.time) -> float | None:
+    """GitHub の 403 がレート制限なら待つ秒数、そうでなければ None（権限の不足など. 再試行しない）."""
+    if status != 403:
+        return None
+    get = headers.get if headers is not None else (lambda _k, _d=None: None)
+    retry_after = get("Retry-After")
+    remaining = get("x-ratelimit-remaining")
+    if not retry_after and remaining != "0" and "rate limit" not in body.lower():
+        return None
+    if retry_after:
+        try:
+            return max(float(retry_after), 0.0)
+        except ValueError:
+            pass
+    reset = get("x-ratelimit-reset")
+    if remaining == "0" and reset:
+        try:
+            return max(float(reset) - now(), 1.0)
+        except ValueError:
+            pass
+    return RATE_LIMIT_DEFAULT_WAIT
+
+
+def _rate_limit_as_429(opener: Callable[..., Any] = safe_urlopen) -> Callable[..., Any]:
+    """403 のレート制限を、Retry-After 付きの 429 に読み替える opener（HttpClient が待って再試行する）."""
+
+    def open_(req: urllib.request.Request, timeout: float) -> Any:
+        try:
+            return opener(req, timeout=timeout)
+        except urllib.error.HTTPError as e:
+            if e.code != 403:
+                raise
+            try:
+                body = e.read().decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 — 本文が読めなくてもヘッダーで判断する
+                body = ""
+            wait = rate_limit_wait(e.code, e.headers, body)
+            if wait is None or wait > RATE_LIMIT_MAX_WAIT:
+                raise urllib.error.HTTPError(e.url, e.code, e.reason or "Forbidden", e.headers, None) from None
+            headers = email.message.Message()
+            headers["Retry-After"] = str(int(wait + 0.999))
+            log.warning("GitHub のレート制限（403）: %d 秒待って再試行します", int(wait + 0.999))
+            raise urllib.error.HTTPError(e.url, 429, "rate limited (403)", headers, None) from None
+
+    return open_
+
+
 def http_fetch(token: str, client: HttpClient | None = None) -> Fetch:
-    """GitHub の REST API を GET する関数. 再試行・レート制限は HttpClient に任せる（api.github.com 以外には送らない）."""
+    """GitHub の REST API を GET する関数. 再試行・レート制限は HttpClient に任せる（api.github.com 以外には送らない）.
+
+    403 のレート制限（secondary rate limit など）も待って再試行する（RATE_LIMIT_MAX_WAIT 秒まで）.
+    """
     client = client or HttpClient(
         API,
         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
         rate_per_sec=5.0,
+        backoff_max=RATE_LIMIT_MAX_WAIT,
+        opener=_rate_limit_as_429(),
     )
 
     def fetch(url: str) -> Any:
@@ -120,29 +183,38 @@ def download(repo: str, fetch: Fetch, since: str = "", max_pulls: int = 200, tz:
 
     max_pulls 件や 1 つの一覧の上限ページ数（MAX_PAGES）で打ち切ったときは、黙って捨てずに警告を出し、
     戻り値の "truncated"（打ち切りの説明のリスト）にも残す（呼び出し側が件数とともに表示する）。
+    取得の途中で失敗（HttpError）したときは、取り終えた PR を返し、"error" に理由を入れる（1 件も無ければ HttpError をそのまま送出）。
     """
     owner_repo = urllib.parse.quote(repo, safe="/")
     pulls: list[dict] = []
     cut: list[str] = []
     notes: list[str] = []
     more_pulls = False
-    for pr in _pages(fetch, f"{API}/repos/{owner_repo}/pulls?state=all&sort=updated&direction=desc", truncated=cut):
-        if since and local_date(pr.get("updated_at", ""), tz) < since:
-            break  # 一覧の途中で止めるので、一覧の打ち切り（cut）には入らない
-        if len(pulls) >= max_pulls:
-            more_pulls = True  # 上限を超える PR がまだある
-            break
-        n = pr["number"]
-        pulls.append(
-            {
-                "number": n,
-                "title": pr.get("title", ""),
-                "user": pr.get("user") or {},
-                "updated_at": pr.get("updated_at", ""),  # --file で読み直すときも --since で絞れるように
-                "comments": list(_pages(fetch, f"{API}/repos/{owner_repo}/pulls/{n}/comments", truncated=cut)),
-                "reviews": list(_pages(fetch, f"{API}/repos/{owner_repo}/pulls/{n}/reviews", truncated=cut)),
-            }
-        )
+    error = ""
+    try:
+        for pr in _pages(fetch, f"{API}/repos/{owner_repo}/pulls?state=all&sort=updated&direction=desc", truncated=cut):
+            if since and local_date(pr.get("updated_at", ""), tz) < since:
+                break  # 一覧の途中で止めるので、一覧の打ち切り（cut）には入らない
+            if len(pulls) >= max_pulls:
+                more_pulls = True  # 上限を超える PR がまだある
+                break
+            n = pr["number"]
+            # コメント・レビューを両方取り終えた PR だけを足す（途中で失敗した PR は入れない）
+            pulls.append(
+                {
+                    "number": n,
+                    "title": pr.get("title", ""),
+                    "user": pr.get("user") or {},
+                    "updated_at": pr.get("updated_at", ""),  # --file で読み直すときも --since で絞れるように
+                    "comments": list(_pages(fetch, f"{API}/repos/{owner_repo}/pulls/{n}/comments", truncated=cut)),
+                    "reviews": list(_pages(fetch, f"{API}/repos/{owner_repo}/pulls/{n}/reviews", truncated=cut)),
+                }
+            )
+    except HttpError as e:
+        if not pulls:
+            raise  # 1 件も取れていなければ以前どおり失敗にする
+        error = f"取得の途中で失敗しました（{e}）。取り終えた PR {len(pulls)} 件だけを返します"
+        log.warning("%s: %s", repo, error)
     if more_pulls:
         notes.append(f"PR は {max_pulls} 件で打ち切りました（それより古い PR は取り込んでいません。--since で期間を絞ってください）")
         log.warning("%s: PR を %d 件で打ち切りました", repo, max_pulls)
@@ -152,6 +224,8 @@ def download(repo: str, fetch: Fetch, since: str = "", max_pulls: int = 200, tz:
     out: dict[str, Any] = {"repo": repo, "pulls": pulls}
     if notes:
         out["truncated"] = notes
+    if error:
+        out["error"] = error
     return out
 
 
