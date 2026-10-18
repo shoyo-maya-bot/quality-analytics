@@ -3,6 +3,10 @@
 - 氏名の列（既定: reviewer・author）は U-xxxxxx の仮名にする。本文中の同じ氏名も同じ仮名にする.
   短い英数字の氏名（ログイン名など. SHORT_ASCII_NAME 文字以下）は、単語の一部（「api」に対する「rapid」など）は
   置き換えず、前後が英数字・「_」でないところだけを置き換える
+  本文では、氏名の途中の空白（半角・全角）の有無・数の違いも同じ氏名として置き換える（「例題 花子」「例題　花子」「例題花子」）.
+  空白で区切った氏名（「例題 花子」）は、姓・名だけ（2 文字以上）の出現も置き換える（同じ姓・名の人が複数いれば ＊＊＊）
+- 仮名は、環境変数 QA_PSEUDONYM_SALT（.env 可）があればそれを鍵にした HMAC-SHA256 から作る（氏名の候補から割り出せない）.
+  無ければ以前と同じソルト無しの SHA-256（同じ人は以前と同じ仮名. 氏名の候補が分かれば割り出せる）
 - メールアドレス・電話番号は、全角・区切りなし・+81 も含めて常に伏せる（設定で外せない）
 - config/mask.yaml の words（社名・システム名など）と patterns（正規表現）も伏せる
 - 区分の列（KEEP）以外は、未知の列も含めてすべて伏せる対象にする（既定で伏せる）
@@ -14,6 +18,8 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import hmac
+import os
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -36,25 +42,82 @@ EMAIL = llm.EMAIL_RE
 _PHONE = llm.PHONE_RE
 
 
-def pseudonym(name: str) -> str:
+SALT_ENV = "QA_PSEUDONYM_SALT"
+
+
+def pseudonym(name: str, salt: str | None = None) -> str:
+    """氏名 → U-xxxxxx. salt（省略時は環境変数 QA_PSEUDONYM_SALT）があれば HMAC-SHA256、無ければ以前と同じ SHA-256."""
+    key = os.environ.get(SALT_ENV, "") if salt is None else salt
+    if key:
+        return "U-" + hmac.new(key.encode(), name.encode(), hashlib.sha256).hexdigest()[:6]
     return "U-" + hashlib.sha256(name.encode()).hexdigest()[:6]
+
+
+def salted() -> bool:
+    """仮名にソルト（QA_PSEUDONYM_SALT）を使っているか."""
+    return bool(os.environ.get(SALT_ENV, ""))
 
 
 def _digest(s: str, n: int = 8) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:n]
 
 
+_SPACE = "[ \t\u3000]*"  # 氏名の途中の空白（半角・全角. 無くてもよい）
+_SPLIT = re.compile(r"[ \t\u3000]+")
+
+
 @functools.lru_cache(maxsize=1024)
-def _name_pattern(name: str) -> re.Pattern[str] | None:
-    """短い英数字の氏名を単語として探す正規表現. それ以外（日本語の氏名・長い名前）は None（そのまま置き換える）."""
-    if name.isascii() and len(name) <= SHORT_ASCII_NAME:
-        return re.compile(rf"(?<![{_WORD}]){re.escape(name)}(?![{_WORD}])")
-    return None
+def _name_pattern(name: str) -> re.Pattern[str]:
+    """本文で氏名を探す正規表現.
+
+    - 短い英数字の氏名（SHORT_ASCII_NAME 文字以下）は単語として現れたところだけ
+    - 英数字以外を含む氏名（日本語など）は、文字の間の空白（半角・全角）の有無・数を問わない（「例題 花子」も「例題　花子」も当たる）
+    - 空白を含む英数字の氏名（Taro Yamada）は、語の間の空白の数・全角を問わない
+    """
+    parts = _SPLIT.split(name.strip())
+    if name.isascii():
+        body = _SPACE.replace("*", "+").join(re.escape(p) for p in parts)
+        if len(name) <= SHORT_ASCII_NAME or len(parts) > 1:
+            return re.compile(rf"(?<![{_WORD}]){body}(?![{_WORD}])")
+        return re.compile(body)
+    return re.compile(_SPACE.join(re.escape(ch) for ch in "".join(parts)))
+
+
+@functools.lru_cache(maxsize=1024)
+def _part_pattern(part: str) -> re.Pattern[str]:
+    """姓・名だけの出現を探す正規表現（英数字は単語として）."""
+    if part.isascii():
+        return re.compile(rf"(?<![{_WORD}]){re.escape(part)}(?![{_WORD}])")
+    return re.compile(re.escape(part))
 
 
 def _replace_name(s: str, name: str, alias: str) -> str:
-    pat = _name_pattern(name)
-    return s.replace(name, alias) if pat is None else pat.sub(alias, s)
+    return _name_pattern(name).sub(alias, s)
+
+
+def name_parts(names: dict[str, str]) -> dict[str, str]:
+    """空白で区切った氏名の姓・名（2 文字以上）→ 仮名. 複数の人に共通する姓・名は ＊＊＊（どの人か決められない）.
+
+    氏名そのもの（区切りの無い氏名を含む）と同じ文字列の部分は除く（氏名として置き換える）.
+    """
+    owners: dict[str, set[str]] = {}
+    for name, alias in names.items():
+        parts = _SPLIT.split(name.strip())
+        if len(parts) < 2:
+            continue
+        for p in parts:
+            if len(p) >= 2:
+                owners.setdefault(p, set()).add(alias)
+    for name, alias in names.items():  # 区切りの無い氏名と同じ部分は、その人の氏名として扱う
+        if name in owners:
+            owners[name].add(alias)
+    out = {p: (next(iter(a)) if len(a) == 1 else MASK) for p, a in owners.items() if p not in names}
+    return dict(sorted(out.items(), key=lambda kv: len(kv[0]), reverse=True))
+
+
+@functools.lru_cache(maxsize=64)
+def _parts_of(items: tuple[tuple[str, str], ...]) -> dict[str, str]:
+    return name_parts(dict(items))
 
 
 def _is_kept_name(v: str) -> bool:
@@ -74,8 +137,11 @@ class Masker:
     def text(self, s: str, names: dict[str, str] | None = None) -> str:
         if not s:
             return s
-        for name, alias in (names or {}).items():  # 氏名 → 仮名（このツール固有）
+        names = names or {}
+        for name, alias in names.items():  # 氏名 → 仮名（このツール固有）
             s = _replace_name(s, name, alias)
+        for part, alias in _parts_of(tuple(names.items())).items():  # 姓・名だけの出現
+            s = _part_pattern(part).sub(alias, s)
         return self._generic.text(s)
 
     def ident(self, s: str, names: dict[str, str] | None = None) -> str:
