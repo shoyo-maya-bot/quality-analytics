@@ -34,7 +34,11 @@ jobs:
           c=(); if [ -f constraints.txt ]; then c=(-c constraints.txt); echo "constraints.txt を使います"; fi
           pip install -e ".[dev]" "${c[@]}"
       - run: ruff check . && ruff format --check .
-      - run: pytest -q
+      - name: カバレッジの計測ツールを入れる（版は固定）
+        run: pip install "coverage==7.10.6"
+      # テストとカバレッジの下限（設定は pyproject.toml の [tool.coverage]. 下限を下回ると失敗）
+      - run: coverage run -m pytest -q
+      - run: coverage report
       - name: sample pipeline (rules only, no API calls)
         run: |
           python samples/make_samples.py

@@ -217,9 +217,17 @@ def cmd_collect(args) -> int:
 
                 args.save_raw.parent.mkdir(parents=True, exist_ok=True)
                 args.save_raw.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        return _store(
+        rc = _store(
             args, github.to_findings(data, phase=args.phase, only_tagged=args.only_tagged, anonymize=args.anonymize, tz=args.timezone)
         )
+        if data.get("error"):
+            # 取り終えた分は取り込んだ（GitHub の取り込みは今回に無い行を削除しないので、取り直せば残りが足される）
+            print(
+                f"error: {data['error']}。取り込んだのは取り終えた分だけです。時間をおいて同じコマンドで取り直してください",
+                file=sys.stderr,
+            )
+            return common_cli.ExitCode.RUNTIME
+        return rc
     if not args.reviews.is_dir():
         raise common_cli.UsageError(f"フォルダが見つかりません: {args.reviews}")
     # 取り込み元の範囲は office-review の指摘すべて: 消したレビュー結果（ファイル・行）の指摘は削除する（指摘表と同じ扱い）
@@ -359,6 +367,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     common_cli.configure_from_args(args)
     os.environ.setdefault("MPLBACKEND", "Agg")
+    # 仮名の鍵（QA_PSEUDONYM_SALT）は .env にも書ける. 取り込み（--file を含む）・読み込みのどちらでも同じ仮名にするため最初に読む
+    load_dotenv()
     return {"collect": cmd_collect, "classify": cmd_classify, "check": cmd_check, "analyze": cmd_analyze}[args.command](args)
 
 
