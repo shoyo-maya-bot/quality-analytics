@@ -12,6 +12,8 @@ office-review の結果 ─┘                                   （ルール / 
 
 ## すぐ使う
 
+必要なもの: Python 3.12 以上（`pyproject.toml` の `requires-python`。CI は 3.12 で確かめています）
+
 1. clone する
 2. **Windows**: `setup.cmd` をダブルクリック ／ **macOS・Linux**: `./setup.sh`
    （`constraints.txt` があれば `-c constraints.txt` で依存の版を CI と同じにして入れます）
@@ -38,7 +40,7 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 - 取り込んだ指摘は `data/findings.csv`（Excel で開ける UTF-8）に **id で追加・更新** されます。本文が変わらなければ分類は残ります
 - 指摘表の id（`table:<相対パス>:<番号>`）と取り込み直したときの扱い（表から無くなった行の削除、同じ id の重複はエラー）は
   [docs/INTERNALS.md](docs/INTERNALS.md)
-- GitHub の日付は、UTC の時刻を `--timezone`（既定は環境変数 `QA_TIMEZONE`、無ければ `Asia/Tokyo`）の日付にします。
+- GitHub の日付は、UTC の時刻を `--timezone`（既定は環境変数 `QA_TIMEZONE`、無ければ `Asia/Tokyo`。`QA_TIMEZONE` は `.env` では効かないので、実際の環境変数にします）の日付にします。
   `--since` もその日付で比べ、それより古い PR が出たところで取得をやめます。通信は 429・5xx・接続エラーを再試行します。
   GitHub が 403 で返すレート制限（secondary rate limit・残り 0）も、待ち時間が 120 秒以内なら待って再試行します（権限の不足の 403 は再試行しません）
 - GitHub の取得が途中で失敗したときは、取り終えた PR の指摘だけを取り込み、「error: 取得の途中で失敗しました…」を出して終了コード 3 にします。
@@ -46,8 +48,12 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 - `--since` は `YYYY-MM-DD` です（`2026/04/01` や存在しない日付は引数の誤りとして終了コード 2）。`--file` と併用したときも、
   保存した JSON の PR の `updated_at` で同じように絞ります（`updated_at` の無い古い JSON の PR は絞れないので取り込み、件数を表示します）
 - GitHub の取得は PR 200 件までなどの上限があり、打ち切ったときは「注意: … 打ち切りました」と表示します（詳しくは docs/INTERNALS.md）
-- GitHub: 返信は元の指摘の「対応内容」になり、Bot のコメントは除きます。`--anonymize` でユーザー名を伏せ、
-  `--save-raw` で取得した JSON を保存できます（以後は `--file` で再取得なしに試せます）
+- GitHub: 返信は元の指摘の「対応内容」になり、Bot のコメントは除きます。`--save-raw` で取得した JSON を保存できます
+  （以後は `--file` で再取得なしに試せます）
+- `--anonymize` は、指摘者・作成者のログイン名を取り込む時点で `U-xxxxxx` にし、本文・対応内容の中の同じログイン名
+  （大文字・小文字の違いも同じ人。`@` の有無を問わず、語として現れたところ）と `@メンション`（PR に参加していない人も）も同じ仮名にします。
+  `config/mask.yaml` の `pseudonymize` を `[]` にしていてもログイン名を伏せたいときに使います
+  （既定の `pseudonymize` でも指摘者・作成者は仮名になりますが、参加していない人への `@メンション` は残ります）
 - `data/` と `output/` は `.gitignore` 済みです。実データをコミットしないでください
 - 取り込むときに個人情報を伏せます（下の「個人情報の伏せ字」）
 
@@ -140,7 +146,8 @@ LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md
 | `summary.xlsx` | 集計表をシートごとに。指摘の一覧も含む |
 | `charts/*.png` | レビュアー別の重要度、工程別の区分、欠陥の観点×真因（ヒートマップ） |
 
-集計: 種類×重要度 / 工程×区分 / レビュアー別（件数・分類済み件数・重要度・欠陥率・ノイズ率・採用率。欠陥率・ノイズ率の分母は全体の率と同じく分類済みの件数）/
+集計: 種類×重要度 / 工程×区分 / レビュアー別（件数・分類済み件数・重要度・欠陥率・ノイズ率・採用率。欠陥率・ノイズ率の分母は全体の率と同じく分類済みの件数。
+分類済みが 0 件のレビュアーの欠陥率・ノイズ率と、判定が 0 件のレビュアーの採用率は 0% ではなく空欄）/
 成果物別（`config/deliverables.csv` のページ数があれば 件/ページ）/ 欠陥の観点×真因 / ノイズの種類×レビュアー
 
 `config/deliverables.csv`（`--deliverables` で変更）は見出しが `deliverable,pages` の CSV です。成果物名には指摘と同じ伏せ字
@@ -153,6 +160,15 @@ LLM API に送る本文、Copilot 用の書き出し、レポート（`report.md
 
 グラフの日本語は、入っているフォント（游ゴシック・メイリオ・Noto Sans CJK など）を自動で使います。文字化けする場合は
 Noto Sans CJK JP などの日本語フォントを入れてください（Linux: `fonts-noto-cjk`）。
+
+## 終了コード
+
+| コード | 意味 |
+|---|---|
+| 0 | 正常 |
+| 1 | 定義に合わない分類がある（`qa check`、`qa classify --mode import`・`--mode api` の `NG`） |
+| 2 | 引数・設定・入力の誤り（`--since` の形式、`config/` の誤り、`classify --mode api` の見積もりが上限を超えたときなど） |
+| 3 | 実行時エラー（`collect github` の取得が途中で失敗した、`classify --mode api` が通信の失敗や実際の費用の上限で途中で止まったとき） |
 
 ## 他のリポジトリとのつながり
 

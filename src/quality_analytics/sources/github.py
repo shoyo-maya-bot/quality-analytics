@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import email.message
 import logging
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -236,9 +237,51 @@ def _who(user: dict | None, anonymize: bool) -> str:
     return pseudonym(login)
 
 
+_LOGIN = "0-9A-Za-z_-"  # GitHub のログイン名に使える文字（と「_」）. この文字が前後に続くところは別の語
+# @メンション（メールアドレスの「@」は前に英数字などが続くので当たらない）
+_MENTION = re.compile(rf"(?<![.+{_LOGIN}])@([0-9A-Za-z][0-9A-Za-z-]{{0,38}})(?![{_LOGIN}])")
+_PSEUDO = re.compile(r"^U-[0-9a-f]{6}$")
+
+
+def _logins(data: dict) -> dict[str, str]:
+    """取得した JSON に出てくるログイン名（PR の作成者・コメント・レビュー. Bot を含む）. 小文字 → 元の表記."""
+    users: list[dict] = []
+    for pr in data.get("pulls", []):
+        users.append(pr.get("user") or {})
+        users += [c.get("user") or {} for c in [*pr.get("comments", []), *pr.get("reviews", [])]]
+    return {str(u["login"]).lower(): str(u["login"]) for u in users if u.get("login")}
+
+
+def anonymize_text(s: str, logins: dict[str, str]) -> str:
+    """本文・対応内容のログイン名を仮名にする（--anonymize）.
+
+    - @メンションは、取得した JSON に出てこない人（PR に参加していない人）も含めて仮名にする（その人は小文字にしてから仮名にする）
+    - 参加者のログイン名（2 文字以上）は @ が無くても、語として現れたところ（前後がログイン名の文字でない）を仮名にする.
+      GitHub のログイン名は大文字・小文字を区別しないので、表記の違い（Reviewer-X）も同じ人の仮名にする
+    """
+    if not s:
+        return s
+
+    def mention(m: re.Match[str]) -> str:
+        name = m.group(1)
+        return m.group(0) if _PSEUDO.match(name) else "@" + pseudonym(logins.get(name.lower(), name.lower()))
+
+    s = _MENTION.sub(mention, s)
+    words = sorted((k for k in logins if len(k) >= 2), key=len, reverse=True)
+    if words:
+        pat = re.compile(rf"(?<![@{_LOGIN}])(?:{'|'.join(map(re.escape, words))})(?![{_LOGIN}])", re.IGNORECASE)
+        s = pat.sub(lambda m: pseudonym(logins[m.group(0).lower()]), s)
+    return s
+
+
 def to_findings(data: dict, *, phase: str = "CD", only_tagged: bool = False, anonymize: bool = False, tz: str = DEFAULT_TZ) -> pd.DataFrame:
     repo = data.get("repo", "")
     rows: list[dict[str, str]] = []
+    logins = _logins(data) if anonymize else {}
+
+    def body(s: str) -> str:
+        return anonymize_text(s, logins) if anonymize else s
+
     for pr in data.get("pulls", []):
         deliverable = f"{repo}#{pr['number']}"
         author = _who(pr.get("user"), anonymize)
@@ -265,8 +308,8 @@ def to_findings(data: dict, *, phase: str = "CD", only_tagged: bool = False, ano
                     "reviewer": _who(c.get("user"), anonymize),
                     "author": author,
                     "severity": sev,
-                    "text": f"{text}（{path}）" if path else text,
-                    "response": " / ".join(replies.get(c["id"], [])),
+                    "text": body(f"{text}（{path}）" if path else text),
+                    "response": body(" / ".join(replies.get(c["id"], []))),
                     "created_at": local_date(c.get("created_at") or c.get("submitted_at") or "", tz),
                 }
             )
