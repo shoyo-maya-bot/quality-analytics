@@ -53,6 +53,11 @@ def _pct(n: float, d: float) -> float:
     return round(100.0 * n / d, 1) if d else 0.0
 
 
+def _rate(n: float, d: float) -> float | None:
+    """率（%）. 分母が 0（分類済みが 0 件など）のときは 0% ではなく None（表では空欄）にする."""
+    return round(100.0 * n / d, 1) if d else None
+
+
 def run(
     df: pd.DataFrame,
     tax: Taxonomy,
@@ -89,9 +94,10 @@ def run(
                 "件数": len(g),
                 "分類済み": classified,
                 **{s: int((g["severity"] == s).sum()) for s in SEVERITIES},
-                "欠陥(A)率%": _pct((g["group"] == "A").sum(), classified),
-                "ノイズ(B)率%": _pct((g["group"] == "B").sum(), classified),
-                "採用率%": _pct((decided["decision"] == "adopted").sum(), len(decided)) if len(decided) else None,
+                # 分類済みが 0 件のレビュアーは率を出せない（0% と書くと「欠陥もノイズも無い」と読めてしまう）ので空欄
+                "欠陥(A)率%": _rate((g["group"] == "A").sum(), classified),
+                "ノイズ(B)率%": _rate((g["group"] == "B").sum(), classified),
+                "採用率%": _rate((decided["decision"] == "adopted").sum(), len(decided)),
             }
         )
     rev = pd.DataFrame(rows).sort_values("件数", ascending=False).reset_index(drop=True)
@@ -147,7 +153,8 @@ def _insights(df: pd.DataFrame, a: Analysis, tax: Taxonomy, noise_threshold: flo
             out.append(f"欠陥が多い観点: {'、'.join(f'{k}（{v}）' for k, v in topics.head(3).items())}。")
     rev = a.tables.get("レビュアー別")
     if rev is not None and not rev.empty:
-        noisy = rev[(rev["ノイズ(B)率%"] >= noise_threshold) & (rev["分類済み"] >= 3)]
+        noise = pd.to_numeric(rev["ノイズ(B)率%"], errors="coerce")  # 空欄（None）は比べない
+        noisy = rev[(noise >= noise_threshold) & (rev["分類済み"] >= 3)]
         for _, r in noisy.iterrows():
             out.append(
                 f"{r['レビュアー']} の指摘はノイズ（B）が {r['ノイズ(B)率%']}% です。表記・好みの指摘はまとめて伝えると、作成者の負担が減ります。"
