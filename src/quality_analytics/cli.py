@@ -11,8 +11,9 @@
   qa analyze                                        # output/ にレポート・ダッシュボード・Excel
 
 取り込んだ指摘と分類の結果は data/findings.csv（既定）に貯まります。
-終了コード: 0 正常 / 1 定義に合わない分類あり（check）/ 2 引数・設定・入力の誤り / 3 実行時エラー
-（classify --mode api が実際の費用の上限で途中で止まったときも 3）
+終了コード: 0 正常 / 1 定義に合わない分類あり（check、classify --mode import・api の NG）/ 2 引数・設定・入力の誤り
+（classify --mode api の見積もりが上限を超えたときも 2）/ 3 実行時エラー（collect github の取得が途中で失敗した、
+classify --mode api が通信の失敗や実際の費用の上限で途中で止まったとき）
 """
 
 from __future__ import annotations
