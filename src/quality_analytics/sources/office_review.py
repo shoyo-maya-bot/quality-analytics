@@ -12,7 +12,9 @@
   同じ旧指紋の指摘が複数あるときは、行のロールと観点が一致するものに結び付ける（決められなければ結び付けない）。
   もっと古い行（指紋なし）は、その No にいまある指摘が同じとき（本文と check_id が一致）だけ結び付ける
 
-この約束は tests/contract/office-review/ の実物の形式で確かめている（README の「office-review との形式の約束」）。
+この約束は tests/contract/office-review/ の実物の形式で確かめている（docs/INTERNALS.md の「office-review との形式の約束」）。
+
+id は office-review:<ファイル名>#<No>、project（プロジェクト名）を渡したときは office-review:<project>:<ファイル名>#<No>。
 """
 
 from __future__ import annotations
@@ -34,6 +36,11 @@ fingerprint_v2 = rr.fingerprint_v2  # 判定の結び付けに使う指紋（off
 SCOPE = "office-review:"  # 取り込んだ指摘の id の先頭（取り込み直したとき、今回に無い行を削除する範囲）
 
 
+def scope(project: str | None = None) -> str:
+    """取り込んだ指摘の id の先頭. project を渡すと office-review:<project>:（別のプロジェクトの指摘と id が重ならない）."""
+    return f"{SCOPE}{project}:" if project else SCOPE
+
+
 def _stderr(msg: str) -> None:
     print(msg, file=sys.stderr)
 
@@ -51,8 +58,12 @@ def load_items(reviews_dir: Path, warn: Callable[[str], Any] | None = None) -> l
     return items
 
 
-def read(reviews_dir: Path, history: Path | None = None, warn: Callable[[str], Any] | None = None) -> pd.DataFrame:
+def read(
+    reviews_dir: Path, history: Path | None = None, warn: Callable[[str], Any] | None = None, project: str | None = None
+) -> pd.DataFrame:
+    """レビュー結果と判定を指摘の表にする. project: プロジェクト名（id と project の列に入る. 無ければ "office-review"）."""
     items = load_items(reviews_dir, warn)
+    prefix = scope(project)
     records = rr.load_history(history, warn or _stderr) if history else []
     decisions = rr.resolve_history_v2(records, items).decisions  # 指紋 v2 → 最新の判定（office-review と同じ規則）
     rows = []
@@ -60,9 +71,9 @@ def read(reviews_dir: Path, history: Path | None = None, warn: Callable[[str], A
         target = Path(it.target).stem if it.target else Path(it.file).stem
         rows.append(
             {
-                "id": f"{SCOPE}{it.key}",
+                "id": f"{prefix}{it.key}",
                 "source": "office-review",
-                "project": "office-review",
+                "project": project or "office-review",
                 "phase": DOC_TYPE_PHASE.get(it.doc_type.lower(), "BD"),
                 "deliverable": target,
                 "reviewer": f"AI:{it.role}",

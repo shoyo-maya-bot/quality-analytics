@@ -35,7 +35,7 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 |---|---|---|
 | 指摘表（.xlsx / .csv / .tsv） | `qa collect table 指摘一覧.xlsx` | 列の対応は `config/sources/table.yaml`。CSV は UTF-8 / Shift_JIS のどちらでも可 |
 | GitHub の PR レビューコメント | `qa collect github --repo owner/name --since 2026-04-01` | `.env` の `GH_TOKEN`（読み取り権限）。本文の先頭の `[MUST]` `[WANT]` `[NITS]` `[Q]` を重要度として読む |
-| office-review | `qa collect office-review --reviews DIR --history FILE` | レビュー結果の表と採否の判定 |
+| office-review | `qa collect office-review --reviews DIR [--history FILE] [--project 名前]` | レビュー結果の表と採否の判定 |
 
 - 取り込んだ指摘は `data/findings.csv`（Excel で開ける UTF-8）に **id で追加・更新** されます。本文が変わらなければ分類は残ります
 - 指摘表の id（`table:<相対パス>:<番号>`）と取り込み直したときの扱い（表から無くなった行の削除、同じ id の重複はエラー）は
@@ -48,6 +48,14 @@ qa analyze                      # output/dashboard.html をブラウザで開く
 - `--since` は `YYYY-MM-DD` です（`2026/04/01` や存在しない日付は引数の誤りとして終了コード 2）。`--file` と併用したときも、
   保存した JSON の PR の `updated_at` で同じように絞ります（`updated_at` の無い古い JSON の PR は絞れないので取り込み、件数を表示します）
 - GitHub の取得は PR 200 件までなどの上限があり、打ち切ったときは「注意: … 打ち切りました」と表示します（詳しくは docs/INTERNALS.md）
+- office-review: `--reviews` のフォルダの `*.md` をファイル名順に読みます（サブフォルダは読みません）。`--history` を付けたのに
+  そのファイルが無いときは、判定なしで黙って取り込まずに引数の誤り（終了コード 2）にします
+- office-review を取り込み直すと、前回の取り込みにあって今回のレビュー結果に無い指摘（消したファイル・行）は **削除** します。
+  **複数のプロジェクト（別の `--reviews` フォルダ）を取り込むときは、それぞれに `--project <名前>` を付けてください**。
+  id が `office-review:<名前>:<ファイル名>#<No>` になり、同じファイル名でも重ならず、ほかのプロジェクトの指摘は消しません
+  （`project` の列にも名前が入ります）。`--project` を付けないと id は `office-review:<ファイル名>#<No>`（以前と同じ）で、
+  `--project` なしで取り込んだ指摘どうしが 1 つの範囲になります（別のフォルダを `--project` なしで取り込むと、前のフォルダの指摘は消えます）
+- `--file` には `--save-raw` で保存した JSON（`pulls` に PR の配列）を渡します。読めない・形の違う JSON は引数の誤り（終了コード 2）です
 - GitHub: 返信は元の指摘の「対応内容」になり、Bot のコメントは除きます。`--save-raw` で取得した JSON を保存できます
   （以後は `--file` で再取得なしに試せます）
 - `--anonymize` は、指摘者・作成者のログイン名を取り込む時点で `U-xxxxxx` にし、本文・対応内容の中の同じログイン名
@@ -167,12 +175,12 @@ Noto Sans CJK JP などの日本語フォントを入れてください（Linux:
 |---|---|
 | 0 | 正常 |
 | 1 | 定義に合わない分類がある（`qa check`、`qa classify --mode import`・`--mode api` の `NG`） |
-| 2 | 引数・設定・入力の誤り（`--since` の形式、`config/` の誤り、`classify --mode api` の見積もりが上限を超えたときなど） |
+| 2 | 引数・設定・入力の誤り（`--since` の形式、`--history`・`--file` のファイルが無い・形が違う、`config/` の誤り（`llm.yaml` に `model` が無いなど）、`classify --mode api` の見積もりが上限を超えたときなど） |
 | 3 | 実行時エラー（`collect github` の取得が途中で失敗した、`classify --mode api` が通信の失敗や実際の費用の上限で途中で止まったとき） |
 
 ## 他のリポジトリとのつながり
 
-- **office-review**: レビュー結果と採否を取り込み、観点（`config/checks.yaml`）を増やす根拠にする
+- **office-review**: レビュー結果と採否を取り込み、office-review の観点（office-review の `config/checks.yaml`。このリポジトリにはありません）を増やす根拠にする
 - **ai-coding**: PR の指摘（MUST / WANT / NITS / Q）を取り込み、AI に任せる範囲やガイドラインの見直しに使う
 - 重要度の区分（MUST / WANT / NITS / Q）は 3 つのリポジトリで共通です
 - office-review の形式との約束（読み方・判定の結び付け・コントラクトテスト）は [docs/INTERNALS.md](docs/INTERNALS.md)

@@ -3,6 +3,7 @@
   qa collect table 指摘一覧.xlsx                    # 指摘表（列の対応は config/sources/table.yaml）
   qa collect github --repo owner/name --since 2026-04-01   # PR のレビューコメント（GH_TOKEN）
   qa collect office-review --reviews ../office-review/reviews --history ../office-review/data/history.jsonl
+  qa collect office-review --reviews ../案件B/reviews --project 案件B   # 別のプロジェクトは --project で分ける
   qa classify --mode rules                          # キーワードで分類（無料）
   qa classify --mode export → Copilot Chat → qa classify --mode import --labels output/labels
   qa classify --mode api                            # 費用の見積もりだけ表示（送信しない）
@@ -12,8 +13,8 @@
 
 取り込んだ指摘と分類の結果は data/findings.csv（既定）に貯まります。
 終了コード: 0 正常 / 1 定義に合わない分類あり（check、classify --mode import・api の NG）/ 2 引数・設定・入力の誤り
-（classify --mode api の見積もりが上限を超えたときも 2）/ 3 実行時エラー（collect github の取得が途中で失敗した、
-classify --mode api が通信の失敗や実際の費用の上限で途中で止まったとき）
+（--history・--file のファイルが無い・形が違う、llm.yaml に model が無い、classify --mode api の見積もりが上限を超えたときも 2）/
+3 実行時エラー（collect github の取得が途中で失敗した、classify --mode api が通信の失敗や実際の費用の上限で途中で止まったとき）
 """
 
 from __future__ import annotations
@@ -79,8 +80,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="日付にするタイムゾーン（既定: 環境変数 QA_TIMEZONE、無ければ Asia/Tokyo）",
     )
     o = c.add_parser("office-review", help="office-review のレビュー結果と判定")
-    o.add_argument("--reviews", type=Path, required=True)
-    o.add_argument("--history", type=Path)
+    o.add_argument("--reviews", type=Path, required=True, help="レビュー結果のフォルダ（中の *.md をファイル名順に読む）")
+    o.add_argument("--history", type=Path, help="判定の履歴（history.jsonl）。指定したファイルが無ければ引数の誤り（終了コード 2）")
+    o.add_argument(
+        "--project",
+        help="プロジェクト名（id は office-review:<名前>:<ファイル名>#<No>）。別のプロジェクトのレビュー結果を取り込むときに付ける。"
+        "付けないと、前回 --project なしで取り込んだ office-review の指摘のうち今回に無いものを削除する",
+    )
 
     k = sub.add_parser("classify", help="指摘を分類する")
     k.add_argument("--mode", choices=["rules", "api", "export", "import"], required=True)
@@ -121,7 +127,10 @@ def _prompt_dir(args) -> Path | None:
 
 def _masker(args) -> mask.Masker:
     llm_conf = args.config_dir / "llm.yaml"
-    extra = ((load_structured(llm_conf) or {}).get("redact") or []) if llm_conf.is_file() else []  # 互換: llm.yaml の redact
+    conf = (load_structured(llm_conf) or {}) if llm_conf.is_file() else {}
+    if not isinstance(conf, dict):
+        raise common_cli.UsageError(f"{llm_conf}: キーと値の形（mapping）で書いてください")
+    extra = conf.get("redact") or []  # 互換: llm.yaml の redact
     try:
         return mask.load(args.config_dir, extra)
     except (OSError, ValueError) as e:
@@ -133,8 +142,10 @@ def _load(args):
     return model.normalize(_masker(args).frame(model.load(args.data)))
 
 
-def _store(args, new, scopes: list[str] | None = None, legacy: dict[str, str] | None = None) -> int:
+def _store(args, new, scopes: list[str] | None = None, legacy: dict[str, str] | None = None, flat_scopes: list[str] | None = None) -> int:
     """取り込んだ指摘を伏せ字にして保存する. scopes（id の先頭）で始まり、今回に無い既存の行は削除する.
+
+    flat_scopes: scopes と同じだが、先頭の後ろに「:」を含まない id だけを削除の対象にする（model.merge の replace_flat_scopes）.
 
     legacy: 新しい id の先頭 → 以前の版の id の先頭（ファイル名だけの id）. 以前の id の行は、新しい id の同じ番号・同じ本文の行に
     置き換える（分類の結果は引き継ぐ）。置き換えられない以前の行は残し、警告する。
@@ -159,7 +170,7 @@ def _store(args, new, scopes: list[str] | None = None, legacy: dict[str, str] | 
                 file=sys.stderr,
             )
     try:
-        merged, added, updated, deleted = model.merge(existing, m.frame(new), masked_scopes)
+        merged, added, updated, deleted = model.merge(existing, m.frame(new), masked_scopes, [mid(s) for s in flat_scopes or []])
     except model.DuplicateIdError as e:
         raise common_cli.UsageError(str(e)) from None
     model.save(merged, args.data)
@@ -167,6 +178,34 @@ def _store(args, new, scopes: list[str] | None = None, legacy: dict[str, str] | 
     if deleted:
         print("削除: 取り込み元（表・レビュー結果）から無くなった行です（分類の結果も消えます）")
     return common_cli.ExitCode.OK
+
+
+def _saved_github_json(path: Path) -> dict:
+    """--file の JSON（--save-raw で保存したもの）を読む. 読めない・形が違うときは引数の誤り（終了コード 2）."""
+    if not path.is_file():
+        raise common_cli.UsageError(f"見つかりません: {path}")
+    try:
+        data = load_structured(path)
+    except (OSError, ValueError) as e:
+        raise common_cli.UsageError(f"{path}: JSON として読めません（{e}）") from None
+    pulls = data.get("pulls") if isinstance(data, dict) else None
+    if not isinstance(pulls, list) or not all(isinstance(pr, dict) and "number" in pr for pr in pulls):
+        raise common_cli.UsageError(
+            f'{path}: --save-raw で保存した形式ではありません（"pulls" に PR（"number" を持つオブジェクト）の配列が必要です）'
+        )
+    return data
+
+
+def _llm_conf(args, need_model: bool) -> dict:
+    """config/llm.yaml を読む. need_model（--mode api）なら model を確かめる（無い・文字列でないときは設定の誤り. 終了コード 2）."""
+    path = args.config_dir / "llm.yaml"
+    conf = _yaml(path)
+    if not isinstance(conf, dict):
+        raise common_cli.UsageError(f"{path}: キーと値の形（mapping）で書いてください")
+    model_name = conf.get("model")
+    if need_model and (not isinstance(model_name, str) or not model_name.strip()):
+        raise common_cli.UsageError(f"{path}: model（例: claude-haiku-4-5-20251001）を書いてください")
+    return conf
 
 
 def cmd_collect(args) -> int:
@@ -197,7 +236,7 @@ def cmd_collect(args) -> int:
         except ValueError as e:
             raise common_cli.UsageError(str(e)) from None
         if args.file:
-            data = load_structured(args.file)
+            data = _saved_github_json(args.file)
             data, dropped, unknown = github.filter_since(data, args.since, args.timezone)
             if args.since:
                 print(f"--since {args.since}: 更新日がそれより前の PR {dropped} 件を除きました")
@@ -231,8 +270,17 @@ def cmd_collect(args) -> int:
         return rc
     if not args.reviews.is_dir():
         raise common_cli.UsageError(f"フォルダが見つかりません: {args.reviews}")
-    # 取り込み元の範囲は office-review の指摘すべて: 消したレビュー結果（ファイル・行）の指摘は削除する（指摘表と同じ扱い）
-    return _store(args, office_review.read(args.reviews, args.history), [office_review.SCOPE])
+    if args.history is not None and not args.history.is_file():
+        raise common_cli.UsageError(f"判定の履歴（--history）が見つかりません: {args.history}")
+    project = args.project
+    if project is not None and (not project.strip() or any(ch in project for ch in ":#")):
+        raise common_cli.UsageError(f"--project は空でなく「:」「#」を含まない名前にしてください: {project!r}")
+    found = office_review.read(args.reviews, args.history, project=project)
+    # 取り込み元の範囲: --project ありはそのプロジェクトの指摘、なしは --project なしで取り込んだ指摘（プロジェクト名の無い id）.
+    # 消したレビュー結果（ファイル・行）の指摘は削除する（指摘表と同じ扱い）. ほかのプロジェクト・取り込み元の指摘は消さない
+    if project is not None:
+        return _store(args, found, [office_review.scope(project)])
+    return _store(args, found, flat_scopes=[office_review.SCOPE])
 
 
 def cmd_classify(args) -> int:
@@ -257,7 +305,7 @@ def cmd_classify(args) -> int:
         print(f"取り込み: 問題 {len(problems)} 件（問題のあるものは取り込んでいません）")
         return common_cli.ExitCode.FINDINGS if problems else common_cli.ExitCode.OK
 
-    conf = _yaml(args.config_dir / "llm.yaml")
+    conf = _llm_conf(args, need_model=args.mode == "api")
     target = df if args.overwrite else df[df["type"] == ""]
     if args.limit is not None:
         target = target.head(args.limit)

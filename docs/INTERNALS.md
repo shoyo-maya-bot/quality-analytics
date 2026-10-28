@@ -39,7 +39,7 @@
 
 ## office-review との形式の約束（テストで確かめています）
 
-office-review が書くレビュー結果（`reviews/*_result.md` の表: No / check_id / 重要度 / ロール / 箇所 / 指摘 / 根拠 /
+office-review が書くレビュー結果（`reviews/*_result.md` の表。取り込みは `--reviews` のフォルダの `*.md` をすべてファイル名順に読み、表の無いファイルは 0 件: No / check_id / 重要度 / ロール / 箇所 / 指摘 / 根拠 /
 無効となるケースの確認）と判定（`data/history.jsonl`）は、devtools-common の共通部品 `devtools_common.review_results`
 （office-review と同じ部品）で読みます。形式は **コントラクトテスト**（`tests/test_office_review_contract.py`）で確かめています。
 
@@ -61,7 +61,10 @@ office-review が書くレビュー結果（`reviews/*_result.md` の表: No / c
   office-review の判定を書く処理で書いた行（指紋なし・旧指紋だけ・今の形））
 - `expected.json` は、同じファイルを office-review 自身の読み込み処理（main の `results.load_all` / `history.load_records` /
   `history.resolve`）で読んだ結果（警告を含む）です。取り込みが表のすべての列・両方の指紋・判定を同じように読めることを確かめます
+- id は `office-review:<ファイル名>#<No>`、`--project <名前>` を付けたときは `office-review:<名前>:<ファイル名>#<No>` です
 - 取り込み直すと、前回取り込んだ office-review の指摘のうち今回のレビュー結果に無いもの（消したファイル・行）は削除します
-  （指摘表の取り込み直しと同じ扱い。ほかの取り込み元の指摘は消しません）
+  （指摘表の取り込み直しと同じ扱い。ほかの取り込み元の指摘は消しません）。削除の範囲は、`--project` を付けたときはその名前の id
+  （`office-review:<名前>:`）、付けないときはプロジェクト名の無い id（`office-review:` の後ろに `:` が無いもの。`model.merge` の
+  `replace_flat_scopes`）だけで、ほかのプロジェクトの指摘は消しません
 - office-review の形式が変わったら、`tests/contract/office-review/regenerate.py` で `expected.json` を作り直し
   （作った版は `expected.json` の `generated_by`）、このテストが通ることを確かめます
