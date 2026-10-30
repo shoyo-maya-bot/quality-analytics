@@ -8,7 +8,7 @@ description: 分析結果（output/report.md）から、次のレビュー・作
 `output/report.md` を読み、次の観点で改善策を 3〜5 個提案してください。
 
 - 欠陥（A）の真因が偏っている → 作成時のチェックリスト・テンプレート・事前の確認会で手当てできるか
-- 欠陥の多い観点 → office-review の観点（config/checks.yaml）に足すべきものはあるか
+- 欠陥の多い観点 → office-review の観点（office-review リポジトリの config/checks.yaml）に足すべきものはあるか
 - ノイズ（B）の多いレビュアー・成果物 → 機械チェック（表記・体裁）に任せられるものはあるか
 - 欠陥の密度が高い成果物 → 再レビューや作成者の支援が必要か
 

@@ -134,16 +134,25 @@ def migrate_ids(existing: pd.DataFrame, new: pd.DataFrame, legacy: dict[str, str
     return out, moved, left
 
 
-def merge(existing: pd.DataFrame, new: pd.DataFrame, replace_scopes: Iterable[str] = ()) -> tuple[pd.DataFrame, int, int, int]:
+def merge(
+    existing: pd.DataFrame, new: pd.DataFrame, replace_scopes: Iterable[str] = (), replace_flat_scopes: Iterable[str] = ()
+) -> tuple[pd.DataFrame, int, int, int]:
     """id で追加・更新する. 分類の結果は、本文が変わっていなければ残す. → (結果, 追加件数, 更新件数, 削除件数).
 
     replace_scopes: 取り込み元の id の先頭（例: "table:指摘一覧:"）. 既存の指摘のうち、この先頭で始まり new に無いものは、
     取り込み元から消えた行として削除する（同じ表を取り込み直したとき、古い行が残って二重に数えないように）。
+    replace_flat_scopes: replace_scopes と同じだが、先頭の後ろに「:」を含まない id だけを対象にする
+    （"office-review:" に対して "office-review:<ファイル名>#<No>" は対象、"office-review:<プロジェクト>:…" は対象外）。
     """
     existing, new = normalize(existing), _check_duplicates(normalize(new))
     scopes = tuple(s for s in replace_scopes if s)
+    flat = tuple(s for s in replace_flat_scopes if s)
     new_ids = set(new["id"])
-    gone = existing["id"].str.startswith(scopes) & ~existing["id"].isin(new_ids) if scopes else pd.Series(False, index=existing.index)
+    ids = existing["id"]
+    in_scope = ids.str.startswith(scopes) if scopes else pd.Series(False, index=existing.index)
+    for s in flat:
+        in_scope |= ids.str.startswith(s) & ~ids.str[len(s) :].str.contains(":", regex=False)
+    gone = in_scope & ~ids.isin(new_ids)
     deleted = int(gone.sum())
     existing = existing[~gone]
     if existing.empty:

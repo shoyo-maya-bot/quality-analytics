@@ -2,6 +2,22 @@
 
 ## 未リリース
 
+### 修正（第 8 回）
+
+- `qa collect office-review`: 取り込み直すと、`--reviews` のフォルダに関係なく前回の office-review の指摘をすべて範囲にしていたため、
+  別のプロジェクトのレビュー結果を取り込むと前のプロジェクトの指摘が消え、同じファイル名の指摘は同じ id になっていました。
+  `--project <名前>` を足しました（id は `office-review:<名前>:<ファイル名>#<No>`、削除の範囲はそのプロジェクトだけ、`project` の列にも名前）。
+  `--project` を付けないときの id と削除の範囲は以前と同じです（`--project` 付きで取り込んだ指摘は消しません）
+- `qa collect office-review --history`: 指定したファイルが無いと、判定なしで黙って取り込み終了コード 0 でした。引数の誤り（終了コード 2）にします
+- `qa classify --mode api`: `config/llm.yaml` に `model` が無いと KeyError で終了コード 3 でした。設定の誤り（終了コード 2）にします。
+  `llm.yaml` がキーと値の形でないときも 2 です（`export` は `model` を使わないので、無くても動きます）
+- `qa collect github --file`: `--save-raw` の形でない JSON（`pulls` が無い・配列でない・PR に `number` が無い）や読めない JSON が
+  終了コード 3 でした。引数の誤り（終了コード 2）にします
+- `sources/office_review.py` の説明が README の節を参照していました（docs/INTERNALS.md に移動済み）。参照先を直し、
+  移した節を README の節として参照していないことをテスト（`tests/test_round8.py`）で確かめます
+- README: office-review の取り込みの説明（`*.md` を読む・`--history`・`--file` の誤り・`--project`）を足し、終了コード 2 の例を実際に合わせました。
+  「観点（`config/checks.yaml`）」は office-review のファイルであることを明記しました（このリポジトリには無い）
+
 ### 修正（第 7 回）
 
 - `qa collect github --anonymize`: 指摘者・作成者の列は仮名になる一方、本文・対応内容の中のログイン名（`@dev-taro` など）が
